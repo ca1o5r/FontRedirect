@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.coordinatorlayout.widget.CoordinatorLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <com.google.android.material.appbar.AppBarLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <com.google.android.material.appbar.MaterialToolbar
+            android:id="@+id/toolbar"
+            android:layout_width="match_parent"
+            android:layout_height="?attr/actionBarSize"
+            app:title="FontRedirect"
+            app:titleTextColor="?attr/colorOnPrimary" />
+    </com.google.android.material.appbar.AppBarLayout>
+
+    <androidx.core.widget.NestedScrollView
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:fillViewport="true"
+        app:layout_behavior="@string/appbar_scrolling_view_behavior">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="16dp">
+
+            <TextView
+                android:id="@+id/version_text"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="16dp"
+                android:textAppearance="?attr/textAppearanceBodyMedium" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="12dp"
+                android:text="功能简介"
+                android:textAppearance="?attr/textAppearanceTitleLarge" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="16dp"
+                android:lineSpacingMultiplier="1.2"
+                android:text="FontRedirect 是一个 LSPosed 模块，用于把目标应用内的字体强制替换为当前设备的系统字体：英文使用 /etc/fonts.xml 中 sans-serif 族对应的字体，中文、日文、韩文（CJK）使用系统 CJK 回退字体。若读取系统配置失败或目标应用位于 Magisk DenyList 中（处于隔离挂载命名空间），则回退到模块内置字体。\n\n本模块同时支持普通 TextView / Paint / Canvas 绘制文本以及 WebView 内的网页文字。对于银行类应用，会自动跳过其 :Security 自检进程以避免触发反 Xposed 保护。"
+                android:textAppearance="?attr/textAppearanceBodyMedium" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="12dp"
+                android:text="使用说明"
+                android:textAppearance="?attr/textAppearanceTitleLarge" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="16dp"
+                android:lineSpacingMultiplier="1.2"
+                android:text="1. 在 LSPosed 管理器中启用 FontRedirect 模块。\n2. 进入该模块的“作用域”，勾选需要替换字体的目标应用。\n3. 强制停止并重新打开目标应用（或重启系统），即可生效。\n\n注意：本应用中的应用列表已不再影响 Hook 范围，真正的作用域由 LSPosed 控制。"
+                android:textAppearance="?attr/textAppearanceBodyMedium" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="12dp"
+                android:text="日志与排错"
+                android:textAppearance="?attr/textAppearanceTitleLarge" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:lineSpacingMultiplier="1.2"
+                android:text="运行日志会写入目标应用的私有目录：\n/sdcard/Android/data/&lt;目标包名&gt;/files/Logs/FontRedirect.log\n\n可以通过右上角菜单导出日志或 LSPosed 日志到 Downloads，方便排错。"
+                android:textAppearance="?attr/textAppearanceBodyMedium" />
+        </LinearLayout>
+    </androidx.core.widget.NestedScrollView>
+
+</androidx.coordinatorlayout.widget.CoordinatorLayout>

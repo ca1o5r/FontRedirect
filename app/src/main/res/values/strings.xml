@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">FontRedirect</string>
+    <string name="search_hint">搜索应用名或包名…</string>
+    <string name="empty_list">未找到应用</string>
+    <string name="loading">加载应用列表…</string>
+    <string name="module_not_enabled">模块尚未在 LSPosed 中启用</string>
+    <string name="version_label">版本：%1$s</string>
+</resources>
