@@ -11,7 +11,7 @@
         android:roundIcon="@drawable/ic_launcher"
         android:supportsRtl="true"
         android:theme="@style/Theme.FontRedirect"
-        android:extractNativeLibs="true">
+        android:extractNativeLibs="false">
 
         <activity
             android:name=".MainActivity"

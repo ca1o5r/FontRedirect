@@ -379,10 +379,13 @@ static int patch_got(got_find_ctx *ctx, void *replacements[]) {
     int patched = 0;
     for (int i = 0; i < ctx->count; ++i) {
         if (ctx->slots[i] == NULL) {
-            LOGW("GOT slot not found for %s", ctx->names[i]);
+            LOGI("GOT slot not present for %s (optional)", ctx->names[i]);
             continue;
         }
-        if (make_writable(ctx->slots[i]) != 0) continue;
+        if (make_writable(ctx->slots[i]) != 0) {
+            LOGW("mprotect failed for %s", ctx->names[i]);
+            continue;
+        }
         *(void **) ctx->slots[i] = replacements[i];
         patched++;
         LOGI("patched %s -> %p", ctx->names[i], replacements[i]);
@@ -424,29 +427,28 @@ static int do_hook_internal(void) {
     for (int i = 0; i < ctx.count; ++i) ctx.names[i] = names[i];
 
     int found = find_got_slots("libflutter.so", &ctx);
-    if (found < ctx.count) {
-        LOGW("libflutter.so not fully found (%d/%d), deferring", found, ctx.count);
+    if (found == 0) {
+        LOGW("libflutter.so not loaded or no AAsset symbols found, deferring");
         pthread_mutex_unlock(&s_init_lock);
         return 0;
     }
 
-    // Save originals before patching.
-    orig_AAssetManager_open = ctx.originals[0];
-    orig_AAsset_getBuffer = ctx.originals[1];
-    orig_AAsset_getLength = ctx.originals[2];
-    orig_AAsset_getLength64 = ctx.originals[3];
-    orig_AAsset_read = ctx.originals[4];
-    orig_AAsset_close = ctx.originals[5];
-
     int patched = patch_got(&ctx, replacements);
-    if (patched == ctx.count) {
+    if (patched == found) {
+        // Save originals for the slots we actually patched.
+        orig_AAssetManager_open = ctx.originals[0];
+        orig_AAsset_getBuffer = ctx.originals[1];
+        orig_AAsset_getLength = ctx.originals[2];
+        orig_AAsset_getLength64 = ctx.originals[3];
+        orig_AAsset_read = ctx.originals[4];
+        orig_AAsset_close = ctx.originals[5];
         __atomic_store_n(&s_hooked, 1, __ATOMIC_RELEASE);
-        LOGI("Flutter AAsset GOT hook applied (%d slots)", patched);
+        LOGI("Flutter AAsset GOT hook applied (%d/%d slots)", patched, ctx.count);
         pthread_mutex_unlock(&s_init_lock);
         return 1;
     }
 
-    LOGW("Flutter hook incomplete: patched %d/%d", patched, ctx.count);
+    LOGW("Flutter hook incomplete: patched %d/%d found %d", patched, ctx.count, found);
     pthread_mutex_unlock(&s_init_lock);
     return 0;
 }
