@@ -16,7 +16,7 @@ android {
 
     signingConfigs {
         release {
-            storeFile file("../../fontredirect.jks")
+            storeFile rootProject.file("fontredirect.jks")
             storePassword "fontredirect"
             keyAlias "fontredirect"
             keyPassword "fontredirect"
