@@ -77,8 +77,28 @@ public class HookEntry implements IXposedHookLoadPackage {
                 hookPaintSetTypeface(pkg, cl);
                 hookCanvasDrawText(pkg, cl);
                 WebViewInjector.hook(pkg, cl);
+                hookFlutterFonts(pkg);
             }
         });
+    }
+
+    private void hookFlutterFonts(String pkg) {
+        try {
+            if (!FontRedirectNative.isAvailable()) {
+                FileLogger.w(TAG, "Native library unavailable, skipping Flutter hook for " + pkg);
+                return;
+            }
+            File latin = FontLoader.getLatinFontFile();
+            File cjk = FontLoader.getCjkFontFile();
+            if (latin == null || cjk == null) {
+                FileLogger.w(TAG, "Font files not ready, skipping Flutter hook for " + pkg);
+                return;
+            }
+            boolean ok = FontRedirectNative.hookFlutter(latin.getAbsolutePath(), cjk.getAbsolutePath());
+            FileLogger.i(TAG, "Flutter AAsset hook result=" + ok + " for " + pkg);
+        } catch (Throwable t) {
+            FileLogger.e(TAG, "Flutter hook failed for " + pkg, t);
+        }
     }
 
     private static String getCurrentProcessName() {

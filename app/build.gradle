@@ -10,8 +10,14 @@ android {
         applicationId "org.c0fle4.FontRedirect"
         minSdk 24
         targetSdk 34
-        versionCode 30
-        versionName "3.7.3"
+        versionCode 31
+        versionName "3.8.0"
+        ndkVersion "25.2.9519653"
+        externalNativeBuild {
+            cmake {
+                abiFilters "armeabi-v7a", "arm64-v8a", "x86", "x86_64"
+            }
+        }
     }
 
     signingConfigs {
@@ -33,6 +39,13 @@ android {
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    externalNativeBuild {
+        cmake {
+            path file("src/main/cpp/CMakeLists.txt")
+            version "3.22.1"
+        }
     }
 }
 
