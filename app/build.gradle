@@ -10,8 +10,8 @@ android {
         applicationId "org.c0fle4.FontRedirect"
         minSdk 24
         targetSdk 34
-        versionCode 33
-        versionName "3.8.2"
+        versionCode 34
+        versionName "3.8.3"
         ndkVersion "25.2.9519653"
         externalNativeBuild {
             cmake {

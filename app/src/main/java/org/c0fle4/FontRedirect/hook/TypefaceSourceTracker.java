@@ -22,9 +22,12 @@ public class TypefaceSourceTracker {
     private static final Map<Integer, String> typefaceSources = new ConcurrentHashMap<>();
 
     // Known patterns that indicate a CJK or English font in target apps.
+    // Ele.me uses Alibaba/ALSC/PingFang assets which are CJK fonts but not covered by
+    // generic family names, so include their identifiers explicitly.
     private static final String[] CJK_HINTS = {
             "noto_sans_cjk", "notosanscjk", "sourcehansans", "sourcehanserif",
-            "miui", "harmony", "opposans", "osans", "chinese"
+            "miui", "harmony", "opposans", "osans", "chinese",
+            "alibaba", "alsc", "pingfang", "pingfangsc"
     };
     private static final String[] ENG_HINTS = {
             "coming_soon", "roboto", "opensans", "montserrat", "lato", "english"
