@@ -48,7 +48,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginBottom="16dp"
                 android:lineSpacingMultiplier="1.2"
-                android:text="FontRedirect 是一个 LSPosed 模块，用于把目标应用内的字体强制替换为当前设备的系统字体：英文使用 /etc/fonts.xml 中 sans-serif 族对应的字体，中文、日文、韩文（CJK）使用系统 CJK 回退字体。若读取系统配置失败或目标应用位于 Magisk DenyList 中（处于隔离挂载命名空间），则回退到模块内置字体。\n\n本模块同时支持普通 TextView / Paint / Canvas 绘制文本以及 WebView 内的网页文字。对于银行类应用，会自动跳过其 :Security 自检进程以避免触发反 Xposed 保护。"
+                android:text="FontRedirect 是一个 LSPosed 模块，用于把目标应用内的字体强制替换为当前设备的系统字体：英文使用 /etc/fonts.xml 中 sans-serif 族对应的字体，中文、日文、韩文（CJK）使用系统 CJK 回退字体。若读取系统配置失败或目标应用位于 Magisk DenyList 中（处于隔离挂载命名空间），则回退到模块内置字体。\n\n本模块同时支持普通 TextView / Paint / Canvas 绘制文本、WebView 内的网页文字，以及 Flutter 应用通过 libflutter.so 加载的所有 APK 内置字体资源（.ttf/.otf/.ttc/.otc）。对于银行类应用，会自动跳过其 :Security 自检进程以避免触发反 Xposed 保护。"
                 android:textAppearance="?attr/textAppearanceBodyMedium" />
 
             <TextView

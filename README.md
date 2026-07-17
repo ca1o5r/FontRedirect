@@ -1,6 +1,6 @@
 # FontRedirect
 
-LSPosed 模块，强制目标应用使用指定的系统字体文件渲染文字。当前版本：3.8.1。
+LSPosed 模块，强制目标应用使用指定的系统字体文件渲染文字。当前版本：3.8.2。
 
 ## 工作原理
 
@@ -18,7 +18,7 @@ Flutter 不经过 Android 的 `TextView`/`Paint`，而是直接通过 Skia/Impel
 1. 枚举已加载模块，定位 `libflutter.so` 的 ELF 镜像。
 2. 解析其动态重定位表，找到 `AAssetManager_open`、`AAsset_getBuffer`、`AAsset_getLength`、`AAsset_getLength64`、`AAsset_read`、`AAsset_close` 的 GOT 表项。
 3. 使用 `mprotect` 绕过 RELRO 只读保护，将实际被 `libflutter.so` 导入的 GOT 表项替换为模块实现的拦截函数（不同 Flutter 版本可能只导入其中一部分，缺失的表项会被跳过）。
-4. 当 `libflutter.so` 尝试打开 `.ttf`/`.otf`/`.ttc` 资源时，返回指向替换字体文件的伪 `AAsset` 句柄。
+4. 当 `libflutter.so` 尝试打开 `.ttf`/`.otf`/`.ttc`/`.otc` 等任意字体资源时，返回指向替换字体文件的伪 `AAsset` 句柄；所有被加载的 Flutter 内置字体都会按文件名中的 CJK 关键字区分并替换。
 5. 若 `Application.onCreate` 触发时 `libflutter.so` 尚未加载，后台轮询最多 5 秒，在加载完成后补刀。
 
 > 注意：Flutter 直装应用的字体完全替换依赖 APK 中字体资源的文件名可被识别为字体文件。如果应用通过动态下载或自定义扩展名加载字体，拦截可能不会生效。
