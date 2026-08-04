@@ -401,4 +401,20 @@ public class TypefaceSourceTracker {
         if (isKnownEnglish(tf)) return "english";
         return "unknown";
     }
+
+    /**
+     * Classify a raw source/family descriptor string as cjk, english, or unknown.
+     * Used by Weex hooks where only the font family name is available.
+     */
+    public static String classifySource(String source) {
+        if (source == null) return "unknown";
+        String s = source.toLowerCase();
+        for (String hint : CJK_HINTS) {
+            if (s.contains(hint)) return "cjk";
+        }
+        for (String hint : ENG_HINTS) {
+            if (s.contains(hint)) return "english";
+        }
+        return "unknown";
+    }
 }
