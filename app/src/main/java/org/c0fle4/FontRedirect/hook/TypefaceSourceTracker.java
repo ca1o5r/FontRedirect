@@ -1,6 +1,7 @@
 package org.c0fle4.FontRedirect.hook;
 
 import android.content.res.AssetManager;
+import android.content.res.Resources;
 import android.graphics.Typeface;
 
 import org.c0fle4.FontRedirect.log.FileLogger;
@@ -21,16 +22,24 @@ public class TypefaceSourceTracker {
     // Typeface identity -> source descriptor (lowercase path/family hint)
     private static final Map<Integer, String> typefaceSources = new ConcurrentHashMap<>();
 
+    // Font resource id -> resolved resource name (populated by Resources.getFont hook)
+    private static final Map<Integer, String> resourceIdToName = new ConcurrentHashMap<>();
+
+    // Prevents recursion when creating styled replacement Typefaces.
+    private static final ThreadLocal<Boolean> replacing = ThreadLocal.withInitial(() -> false);
+
     // Known patterns that indicate a CJK or English font in target apps.
     // Ele.me uses Alibaba/ALSC/PingFang assets which are CJK fonts but not covered by
     // generic family names, so include their identifiers explicitly.
     private static final String[] CJK_HINTS = {
             "noto_sans_cjk", "notosanscjk", "sourcehansans", "sourcehanserif",
-            "miui", "harmony", "opposans", "osans", "chinese",
-            "alibaba", "alsc", "pingfang", "pingfangsc"
+            "miui", "misans", "harmony", "opposans", "osans", "chinese",
+            "alibaba", "alsc", "pingfang", "pingfangsc",
+            "futu", "nn_font"
     };
     private static final String[] ENG_HINTS = {
-            "coming_soon", "roboto", "opensans", "montserrat", "lato", "english"
+            "coming_soon", "roboto", "opensans", "montserrat", "lato", "english",
+            "core sans"
     };
 
     public static void hook(String pkg, ClassLoader cl) {
@@ -66,6 +75,7 @@ public class TypefaceSourceTracker {
                                 String src = "asset:" + param.args[1];
                                 record(tf, src);
                                 FileLogger.i(TAG, "TypefaceSource asset " + src + " -> " + tf.hashCode());
+                                tryReplaceResult(param, src);
                             }
                         }
                     });
@@ -86,6 +96,7 @@ public class TypefaceSourceTracker {
                                 String src = "file:" + param.args[0];
                                 record(tf, src);
                                 FileLogger.i(TAG, "TypefaceSource file " + src + " -> " + tf.hashCode());
+                                tryReplaceResult(param, src);
                             }
                         }
                     });
@@ -107,6 +118,7 @@ public class TypefaceSourceTracker {
                                 String src = "file:" + (f != null ? f.getAbsolutePath() : "null");
                                 record(tf, src);
                                 FileLogger.i(TAG, "TypefaceSource file2 " + src + " -> " + tf.hashCode());
+                                tryReplaceResult(param, src);
                             }
                         }
                     });
@@ -142,6 +154,7 @@ public class TypefaceSourceTracker {
                             }
                             record(tf, sb.toString());
                             FileLogger.i(TAG, "TypefaceSource " + name + " " + sb + " -> " + tf.hashCode());
+                            tryReplaceResult(param, sb.toString());
                         }
                     }
                 };
@@ -165,8 +178,10 @@ public class TypefaceSourceTracker {
                             Typeface tf = (Typeface) param.getResult();
                             if (tf != null) {
                                 String family = (String) param.args[0];
-                                record(tf, "family:" + family);
+                                String src = "family:" + family;
+                                record(tf, src);
                                 FileLogger.i(TAG, "TypefaceSource create family:" + family + " -> " + tf.hashCode());
+                                tryReplaceResult(param, src);
                             }
                         }
                     });
@@ -195,8 +210,10 @@ public class TypefaceSourceTracker {
                             if (tf != null && family != null) {
                                 String src = getSource(family);
                                 if (src != null) {
-                                    record(tf, "derive:" + src);
-                                    FileLogger.i(TAG, "TypefaceSource derive " + src + " -> " + tf.hashCode());
+                                    String derivedSrc = buildDerivedSource(src);
+                                    record(tf, derivedSrc);
+                                    FileLogger.i(TAG, "TypefaceSource derive " + derivedSrc + " -> " + tf.hashCode());
+                                    tryReplaceResult(param, derivedSrc);
                                 }
                             }
                         }
@@ -228,9 +245,22 @@ public class TypefaceSourceTracker {
                         protected void afterHookedMethod(MethodHookParam param) {
                             Typeface tf = (Typeface) param.getResult();
                             if (tf != null) {
-                                String src = "resources-font:" + param.args[0];
+                                int id = (Integer) param.args[0];
+                                String name = null;
+                                try {
+                                    Resources res = (Resources) param.thisObject;
+                                    name = res.getResourceName(id);
+                                } catch (Throwable ignored) {
+                                }
+                                if (name != null) {
+                                    resourceIdToName.put(id, name);
+                                }
+                                String src = name != null
+                                        ? "resources-font:" + name + ":" + id
+                                        : "resources-font:" + id;
                                 record(tf, src);
                                 FileLogger.i(TAG, "TypefaceSource " + src + " -> " + tf.hashCode());
+                                tryReplaceResult(param, src);
                             }
                         }
                     });
@@ -253,6 +283,54 @@ public class TypefaceSourceTracker {
         return null;
     }
 
+    private static Typeface replacementFor(Typeface original, String source) {
+        if (original == null || source == null || replacing.get()) return null;
+        String s = source.toLowerCase();
+        boolean cjk = false;
+        boolean english = false;
+        for (String hint : CJK_HINTS) {
+            if (s.contains(hint)) {
+                cjk = true;
+                break;
+            }
+        }
+        if (!cjk) {
+            for (String hint : ENG_HINTS) {
+                if (s.contains(hint)) {
+                    english = true;
+                    break;
+                }
+            }
+        }
+        if (!cjk && !english) return null;
+        Typeface base = cjk ? FontLoader.getCjkTypeface() : FontLoader.getEnglishTypeface();
+        if (base == null || base == original) return null;
+        int style = original.getStyle();
+        if (style == 0 || base.getStyle() == style) return base;
+        // Guard against recursive hooks from Typeface.create.
+        replacing.set(true);
+        try {
+            return Typeface.create(base, style);
+        } finally {
+            replacing.set(false);
+        }
+    }
+
+    private static void tryReplaceResult(XC_MethodHook.MethodHookParam param, String source) {
+        if (replacing.get()) return;
+        Typeface original = (Typeface) param.getResult();
+        Typeface repl = replacementFor(original, source);
+        if (repl == null || repl == original) return;
+        replacing.set(true);
+        try {
+            param.setResult(repl);
+            record(repl, source);
+            FileLogger.i(TAG, "TypefaceSource replaced at source " + source + " -> " + FontLoader.getTypefaceName(repl));
+        } finally {
+            replacing.set(false);
+        }
+    }
+
     private static void record(Typeface tf, String source) {
         if (tf == null || source == null) return;
         typefaceSources.put(System.identityHashCode(tf), source.toLowerCase());
@@ -264,7 +342,7 @@ public class TypefaceSourceTracker {
     }
 
     public static boolean isKnownCjk(Typeface tf) {
-        String src = getSource(tf);
+        String src = getClassifiableSource(tf);
         if (src == null) return false;
         for (String hint : CJK_HINTS) {
             if (src.contains(hint)) return true;
@@ -273,12 +351,49 @@ public class TypefaceSourceTracker {
     }
 
     public static boolean isKnownEnglish(Typeface tf) {
-        String src = getSource(tf);
+        String src = getClassifiableSource(tf);
         if (src == null) return false;
         for (String hint : ENG_HINTS) {
             if (src.contains(hint)) return true;
         }
         return false;
+    }
+
+    private static String getClassifiableSource(Typeface tf) {
+        String src = getSource(tf);
+        if (src == null) return null;
+        if (src.contains("resources-font:")) {
+            Integer id = parseResourceId(src);
+            String name = id != null ? resourceIdToName.get(id) : null;
+            if (name != null && !src.contains(name)) {
+                return src + "|" + name;
+            }
+        }
+        return src;
+    }
+
+    private static String buildDerivedSource(String src) {
+        if (src == null) return null;
+        if (src.startsWith("resources-font:")) {
+            Integer id = parseResourceId(src);
+            String name = id != null ? resourceIdToName.get(id) : null;
+            if (name != null) {
+                return "derive:resources-font:" + name + ":" + id;
+            }
+        }
+        return "derive:" + src;
+    }
+
+    private static Integer parseResourceId(String src) {
+        if (src == null) return null;
+        int lastColon = src.lastIndexOf(':');
+        if (lastColon < 0 || lastColon == src.length() - 1) return null;
+        String num = src.substring(lastColon + 1);
+        try {
+            return Integer.parseInt(num);
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     public static String classify(Typeface tf) {

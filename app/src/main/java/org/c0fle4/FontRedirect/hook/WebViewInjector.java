@@ -27,6 +27,12 @@ public class WebViewInjector {
     private static final String FONT_PATH_CJK = "/cjk";
 
     public static void hook(String pkg, ClassLoader cl) {
+        // Twitch uses bot-protection WebViews (passport.twitch.tv); wrapping the
+        // WebViewClient and injecting CSS breaks the Live tab content loader.
+        if ("tv.twitch.android.app".equals(pkg)) {
+            FileLogger.i(TAG, "Skipping WebView injection for Twitch to avoid bot-protection interference");
+            return;
+        }
         hookSetWebViewClient(pkg, cl);
         hookLoadUrl(pkg, cl);
     }
