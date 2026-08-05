@@ -909,8 +909,9 @@ public class HookEntry implements IXposedHookLoadPackage {
      * Constructors must be hooked through XposedBridge.hookMethod at runtime.
      */
     private void hookConstructor(Member constructor, XC_MethodHook callback) throws Exception {
-        Class<?> xposedBridge = Class.forName("de.robv.android.xposed.XposedBridge");
-        Method hookMethod = xposedBridge.getDeclaredMethod("hookMethod", Member.class, XC_MethodHook.class);
+        // Use the imported class literal; LSPosed rewrites this reference at runtime,
+        // whereas Class.forName with a string literal would try the original package.
+        Method hookMethod = XposedBridge.class.getDeclaredMethod("hookMethod", Member.class, XC_MethodHook.class);
         hookMethod.invoke(null, constructor, callback);
     }
 
