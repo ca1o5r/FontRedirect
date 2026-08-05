@@ -35,7 +35,7 @@
 
 #define MAGIC_FAKE_ASSET 0x46524454u  // "FRT"
 #define MAX_SYMBOLS 16
-#define MAX_TARGET_LIBS 2
+#define MAX_TARGET_LIBS 8
 
 // Replacement font paths configured from Java.
 static char s_latin_path[512];
@@ -43,11 +43,19 @@ static char s_cjk_path[512];
 static pthread_mutex_t s_init_lock = PTHREAD_MUTEX_INITIALIZER;
 
 // Target native libraries that load bundled fonts through AAssetManager.
+// Ele.me's home page is rendered by Weex/Unicorn, which may load fonts from
+// assets or from extracted cache files. Include all likely Weex/Flutter libs.
 static const char *s_target_libs[MAX_TARGET_LIBS] = {
     "libflutter.so",
-    "libunicorn.so"
+    "libunicorn.so",
+    "libweex_framework.so",
+    "libweexjsb.so",
+    "libweexcore.so",
+    "libweexuikit.so",
+    "libweexjss.so",
+    "libweexjsc.so"
 };
-static int s_lib_hooked[MAX_TARGET_LIBS] = {0, 0};
+static int s_lib_hooked[MAX_TARGET_LIBS] = {0};
 static int s_any_hooked = 0;
 
 // Original function pointers saved before GOT patching.
@@ -418,6 +426,26 @@ static void save_originals(got_find_ctx *ctx) {
 }
 
 // -------------------------------------------------------------------------
+// Diagnostic: log all currently loaded modules so we can see which Weex/
+// Unicorn/Flutter libraries are present when the hook runs.
+// -------------------------------------------------------------------------
+static int log_modules_callback(struct dl_phdr_info *info, size_t size, void *data) {
+    (void) size;
+    (void) data;
+    if (info->dlpi_name) {
+        LOGI("loaded module: %s base=0x%llx", info->dlpi_name,
+             (unsigned long long) info->dlpi_addr);
+    }
+    return 0;
+}
+
+static void log_loaded_modules(void) {
+    LOGI("--- begin loaded modules ---");
+    dl_iterate_phdr(log_modules_callback, NULL);
+    LOGI("--- end loaded modules ---");
+}
+
+// -------------------------------------------------------------------------
 // Hook installation.
 // -------------------------------------------------------------------------
 static int do_hook_internal(void) {
@@ -485,7 +513,9 @@ static int do_hook_internal(void) {
 static void *poll_hook_thread(void *arg) {
     (void) arg;
     // Poll frequently at startup while target libraries are normally loaded,
-    // then back off for late/lazy-loaded libraries such as libunicorn.so.
+    // then back off for late/lazy-loaded libraries such as libunicorn.so and
+    // the various Weex libraries. Ele.me's Weex engine can load several seconds
+    // after process start, so keep polling for up to ~90 seconds total.
     for (int i = 0; i < 50; ++i) {
         if (do_hook_internal()) {
             LOGI("Native AAsset hook applied from poll thread");
@@ -493,7 +523,7 @@ static void *poll_hook_thread(void *arg) {
         }
         usleep(100 * 1000);  // 100 ms
     }
-    for (int i = 0; i < 60; ++i) {
+    for (int i = 0; i < 120; ++i) {
         if (do_hook_internal()) {
             LOGI("Native AAsset hook applied from poll thread (late)");
             return NULL;
@@ -538,6 +568,10 @@ Java_org_c0fle4_FontRedirect_hook_FontRedirectNative_hookFlutter(
     (*env)->ReleaseStringUTFChars(env, cjkPath, cjk);
 
     LOGI("hookFlutter called latin=%s cjk=%s", s_latin_path, s_cjk_path);
+
+    // Log the module landscape before we start scanning. This helps diagnose
+    // whether the Weex/Flutter libraries were already loaded when the hook ran.
+    log_loaded_modules();
 
     if (do_hook_internal()) {
         return JNI_TRUE;

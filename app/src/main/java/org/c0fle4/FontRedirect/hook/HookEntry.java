@@ -16,6 +16,8 @@ import org.c0fle4.FontRedirect.log.FileLogger;
 
 import java.io.File;
 import java.io.IOException;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Member;
 import java.lang.reflect.Method;
 import java.net.URL;
 
@@ -56,6 +58,12 @@ public class HookEntry implements IXposedHookLoadPackage {
                 Application app = (Application) param.thisObject;
                 FileLogger.init(app);
                 FileLogger.i(TAG, "Application.onCreate hooked for " + pkg);
+
+                // Weex/Unicorn caches original fonts and glyph textures. Clear only
+                // font/Weex-related cache entries on every cold start so the engine
+                // has to rebuild its text cache through our hooked font paths.
+                CacheCleaner.cleanFontCaches(app);
+
                 try {
                     Context moduleCtx = app.createPackageContext("org.c0fle4.FontRedirect", Context.CONTEXT_IGNORE_SECURITY);
                     FileLogger.i(TAG, "module context created for " + pkg);
@@ -78,10 +86,12 @@ public class HookEntry implements IXposedHookLoadPackage {
                 TypefaceSourceTracker.hook(pkg, cl);
                 hookPaintSetTypeface(pkg, cl);
                 hookCanvasDrawText(pkg, cl);
+                hookFileInputStreamForFonts(pkg, cl);
                 hookWeexTextManager(pkg, cl);
                 hookWeexTextStyleUtils(pkg, cl);
                 hookWeexTextLayoutBuilder(pkg, cl);
                 hookWeexTextDrawable(pkg, cl);
+                hookDynamicWeexClasses(pkg, cl);
                 WebViewInjector.hook(pkg, cl);
                 hookFlutterFonts(pkg);
             }
@@ -387,6 +397,84 @@ public class HookEntry implements IXposedHookLoadPackage {
         } catch (Throwable t) {
             FileLogger.e(TAG, "replaceTypefaceForDrawText failed for " + pkg, t);
         }
+    }
+
+    /**
+     * Ele.me caches extracted/downloaded font files in its private directories and
+     * reopens them with FileInputStream on warm starts, bypassing Typeface creation
+     * hooks. Redirect those file opens to our replacement font files.
+     */
+    private void hookFileInputStreamForFonts(String pkg, ClassLoader cl) {
+        if (!"me.ele".equals(pkg)) return;
+        try {
+            Class<?> fisClass = XposedHelpers.findClass("java.io.FileInputStream", cl);
+            Constructor<?> ctor = fisClass.getDeclaredConstructor(File.class);
+            hookConstructor(ctor, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    redirectFileArg(pkg, param, 0);
+                }
+            });
+            FileLogger.i(TAG, "FileInputStream(File) hooked for " + pkg);
+        } catch (Throwable t) {
+            FileLogger.e(TAG, "Failed to hook FileInputStream(File) for " + pkg, t);
+        }
+        try {
+            Class<?> fisClass = XposedHelpers.findClass("java.io.FileInputStream", cl);
+            Constructor<?> ctor = fisClass.getDeclaredConstructor(String.class);
+            hookConstructor(ctor, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    redirectPathArg(pkg, param, 0);
+                }
+            });
+            FileLogger.i(TAG, "FileInputStream(String) hooked for " + pkg);
+        } catch (Throwable t) {
+            FileLogger.e(TAG, "Failed to hook FileInputStream(String) for " + pkg, t);
+        }
+    }
+
+    private void redirectFileArg(String pkg, XC_MethodHook.MethodHookParam param, int index) {
+        try {
+            File file = (File) param.args[index];
+            String replacement = chooseReplacementPath(pkg, file);
+            if (replacement != null) {
+                param.args[index] = new File(replacement);
+                FileLogger.i(TAG, "FileInputStream redirected pkg=" + pkg + " " + file + " -> " + replacement);
+            }
+        } catch (Throwable t) {
+            FileLogger.e(TAG, "redirectFileArg failed for " + pkg, t);
+        }
+    }
+
+    private void redirectPathArg(String pkg, XC_MethodHook.MethodHookParam param, int index) {
+        try {
+            String path = (String) param.args[index];
+            String replacement = chooseReplacementPath(pkg, new File(path));
+            if (replacement != null) {
+                param.args[index] = replacement;
+                FileLogger.i(TAG, "FileInputStream redirected pkg=" + pkg + " " + path + " -> " + replacement);
+            }
+        } catch (Throwable t) {
+            FileLogger.e(TAG, "redirectPathArg failed for " + pkg, t);
+        }
+    }
+
+    private String chooseReplacementPath(String pkg, File file) {
+        if (file == null) return null;
+        String path = file.getAbsolutePath();
+        // Only intercept font files inside the target app's own private dirs.
+        if (!path.contains("/" + pkg + "/")) return null;
+        String name = file.getName().toLowerCase();
+        if (!name.endsWith(".ttf") && !name.endsWith(".otf") && !name.endsWith(".ttc")) return null;
+        // Do not redirect our own replacement fonts (would recurse).
+        File cjk = FontLoader.getCjkFontFile();
+        File latin = FontLoader.getLatinFontFile();
+        if (cjk != null && path.equals(cjk.getAbsolutePath())) return null;
+        if (latin != null && path.equals(latin.getAbsolutePath())) return null;
+        // For Ele.me everything is CJK; otherwise keep latin for non-CJK apps.
+        File target = "me.ele".equals(pkg) ? cjk : latin;
+        return target != null ? target.getAbsolutePath() : null;
     }
 
     private void applyFontToTextView(String pkg, Object obj) {
@@ -733,6 +821,97 @@ public class HookEntry implements IXposedHookLoadPackage {
                 applying.set(false);
             }
         }
+    }
+
+    /**
+     * Ele.me ships several Weex builds. The exact package/name of text classes varies
+     * between versions. Try to discover and hook the most common variants dynamically.
+     */
+    private void hookDynamicWeexClasses(String pkg, ClassLoader cl) {
+        String[][] classMethodSignatures = {
+                {"com.taobao.android.weex_uikit.widget.text.TextStyleUtils", "applyFontStyle"},
+                {"com.taobao.android.weex_uikit.widget.text.TextStyleUtils", "getOrCreateTypeface"},
+                {"com.taobao.android.weex_uikit.widget.text.TextManager", "applyFontStyle"},
+                {"com.taobao.android.weex.adapter.DefaultWXFontAdapter", "getFontTypeface"},
+                {"com.taobao.android.weex.adapter.IWXFontAdapter", "getFontTypeface"},
+                {"com.taobao.android.weex.utils.WXResourceUtils", "getFontTypeface"},
+                {"com.taobao.weex.adapter.DefaultWXFontAdapter", "getFontTypeface"},
+                {"com.taobao.weex.adapter.IWXFontAdapter", "getFontTypeface"},
+                {"com.taobao.weex.utils.WXResourceUtils", "getFontTypeface"},
+                {"com.taobao.android.weex.dom.WXStyle", "getFontFamily"},
+        };
+        for (String[] cms : classMethodSignatures) {
+            try {
+                Class<?> clazz = XposedHelpers.findClass(cms[0], cl);
+                int hooked = 0;
+                for (java.lang.reflect.Method m : clazz.getDeclaredMethods()) {
+                    if (!m.getName().equals(cms[1])) continue;
+                    Class<?>[] pts = m.getParameterTypes();
+                    Object[] paramTypes = new Object[pts.length + 1];
+                    System.arraycopy(pts, 0, paramTypes, 0, pts.length);
+                    final boolean returnsTypeface = m.getReturnType() == Typeface.class;
+                    paramTypes[pts.length] = new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            try {
+                                String fontFamily = null;
+                                int style = 0;
+                                for (Object arg : param.args) {
+                                    if (arg instanceof String) fontFamily = (String) arg;
+                                    else if (arg instanceof Integer && style == 0) style = (Integer) arg;
+                                }
+                                Typeface desired = getWeexReplacementTypeface(pkg, fontFamily, style);
+                                if (desired == null) return;
+                                if (returnsTypeface) {
+                                    Typeface result = (Typeface) param.getResult();
+                                    if (desired != result) {
+                                        param.setResult(desired);
+                                        FileLogger.i(TAG, "Dynamic Weex " + cms[0] + "." + cms[1]
+                                                + " replaced pkg=" + pkg + " family=" + fontFamily
+                                                + " style=" + style + " -> " + FontLoader.getTypefaceName(desired));
+                                    }
+                                } else {
+                                    // Method returns void; we cannot replace the return value, but the
+                                    // TextPaint argument (if present) can still be patched.
+                                    for (Object arg : param.args) {
+                                        if (arg instanceof TextPaint) {
+                                            TextPaint paint = (TextPaint) arg;
+                                            Typeface current = paint.getTypeface();
+                                            if (desired != current) {
+                                                paint.setTypeface(desired);
+                                                FileLogger.i(TAG, "Dynamic Weex " + cms[0] + "." + cms[1]
+                                                        + " paint replaced pkg=" + pkg + " family=" + fontFamily
+                                                        + " style=" + style + " -> " + FontLoader.getTypefaceName(desired));
+                                            }
+                                            break;
+                                        }
+                                    }
+                                }
+                            } catch (Throwable t) {
+                                FileLogger.e(TAG, "Dynamic Weex " + cms[0] + "." + cms[1] + " failed for " + pkg, t);
+                            }
+                        }
+                    };
+                    XposedHelpers.findAndHookMethod(clazz, cms[1], paramTypes);
+                    hooked++;
+                }
+                if (hooked > 0) {
+                    FileLogger.i(TAG, "Dynamic Weex " + cms[0] + "." + cms[1] + " hooked (" + hooked + " overloads) for " + pkg);
+                }
+            } catch (Throwable t) {
+                FileLogger.w(TAG, "Dynamic Weex class not available: " + cms[0] + " for " + pkg);
+            }
+        }
+    }
+
+    /**
+     * api-82.jar only exposes XposedHelpers.findAndHookMethod at compile time.
+     * Constructors must be hooked through XposedBridge.hookMethod at runtime.
+     */
+    private void hookConstructor(Member constructor, XC_MethodHook callback) throws Exception {
+        Class<?> xposedBridge = Class.forName("de.robv.android.xposed.XposedBridge");
+        Method hookMethod = xposedBridge.getDeclaredMethod("hookMethod", Member.class, XC_MethodHook.class);
+        hookMethod.invoke(null, constructor, callback);
     }
 
     private Typeface pickWeexTypeface(String pkg, Typeface original) {

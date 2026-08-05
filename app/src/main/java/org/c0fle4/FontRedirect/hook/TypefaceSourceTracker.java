@@ -42,7 +42,14 @@ public class TypefaceSourceTracker {
             "core sans"
     };
 
+    // Package-specific override: for these packages, any .ttf/.otf file loaded
+    // from the app's own private directories (cache, files, code-cache) is treated
+    // as a CJK font. Ele.me downloads/extracts its custom fonts to those dirs and
+    // Weex reuses them on warm starts, bypassing asset-based source tracking.
+    private static volatile String targetPackage = null;
+
     public static void hook(String pkg, ClassLoader cl) {
+        targetPackage = pkg;
         hookCreateFromAsset(pkg, cl);
         hookCreateFromFile(pkg, cl);
         hookCreateFromFile2(pkg, cl);
@@ -299,6 +306,20 @@ public class TypefaceSourceTracker {
                 if (s.contains(hint)) {
                     english = true;
                     break;
+                }
+            }
+        }
+        // Ele.me and similar apps extract their bundled/custom fonts into cache/
+        // files/ directories, then reload them on warm starts. Those file paths
+        // do not contain CJK hints, so force them to CJK based on package and
+        // private-directory location.
+        if (!cjk && !english && s.startsWith("file:/data/data/")) {
+            String pkg = targetPackage;
+            if (pkg != null && s.contains("/data/data/" + pkg + "/")) {
+                String filePart = s.substring(s.lastIndexOf('/') + 1);
+                if (filePart.endsWith(".ttf") || filePart.endsWith(".otf") || filePart.endsWith(".ttc")) {
+                    FileLogger.i(TAG, "Treating app-private font as CJK: " + source);
+                    cjk = true;
                 }
             }
         }
