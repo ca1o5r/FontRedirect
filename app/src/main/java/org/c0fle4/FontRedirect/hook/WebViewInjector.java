@@ -26,11 +26,29 @@ public class WebViewInjector {
     private static final String FONT_PATH_LATIN = "/latin";
     private static final String FONT_PATH_CJK = "/cjk";
 
+    // Apps whose WebViews are used for native UI navigation rather than content
+    // rendering. Wrapping their WebViewClient or injecting CSS can break clicks,
+    // device control pages, or payment flows.
+    private static final java.util.Set<String> SKIP_PACKAGES = new java.util.HashSet<>(java.util.Arrays.asList(
+            "tv.twitch.android.app",
+            "com.xiaomi.smarthome",
+            "com.android.chrome",
+            "com.chrome.beta",
+            "com.chrome.dev",
+            "com.chrome.canary",
+            "org.mozilla.firefox",
+            "com.microsoft.emmx",
+            "com.opera.browser",
+            "com.brave.browser"
+    ));
+
     public static void hook(String pkg, ClassLoader cl) {
         // Twitch uses bot-protection WebViews (passport.twitch.tv); wrapping the
         // WebViewClient and injecting CSS breaks the Live tab content loader.
-        if ("tv.twitch.android.app".equals(pkg)) {
-            FileLogger.i(TAG, "Skipping WebView injection for Twitch to avoid bot-protection interference");
+        // Xiaomi Home uses WebViews for device control pages; wrapping the client
+        // breaks taps such as opening "Mijia Ceiling...".
+        if (SKIP_PACKAGES.contains(pkg)) {
+            FileLogger.i(TAG, "Skipping WebView injection for " + pkg + " to avoid UI interference");
             return;
         }
         hookSetWebViewClient(pkg, cl);

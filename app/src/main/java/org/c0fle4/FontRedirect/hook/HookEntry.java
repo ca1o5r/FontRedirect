@@ -59,10 +59,13 @@ public class HookEntry implements IXposedHookLoadPackage {
                 FileLogger.init(app);
                 FileLogger.i(TAG, "Application.onCreate hooked for " + pkg);
 
-                // Weex/Unicorn caches original fonts and glyph textures. Clear only
-                // font/Weex-related cache entries on every cold start so the engine
-                // has to rebuild its text cache through our hooked font paths.
-                CacheCleaner.cleanFontCaches(app);
+                // Weex/Unicorn caches original fonts and glyph textures. Only clear
+                // font/Weex-related cache entries for apps known to need it (Ele.me).
+                // Running this on unrelated apps such as Xiaomi Home can delete
+                // important UI bundles and break navigation.
+                if ("me.ele".equals(pkg)) {
+                    CacheCleaner.cleanFontCaches(app);
+                }
 
                 try {
                     Context moduleCtx = app.createPackageContext("org.c0fle4.FontRedirect", Context.CONTEXT_IGNORE_SECURITY);
@@ -92,6 +95,9 @@ public class HookEntry implements IXposedHookLoadPackage {
                 hookWeexTextLayoutBuilder(pkg, cl);
                 hookWeexTextDrawable(pkg, cl);
                 hookDynamicWeexClasses(pkg, cl);
+                // Catch all text layout creation paths (StaticLayout/DynamicLayout/BoringLayout)
+                // so Weex/native views that build layouts before drawing cannot bypass our fonts.
+                hookTextLayoutConstructors(pkg, cl);
                 WebViewInjector.hook(pkg, cl);
                 hookFlutterFonts(pkg);
             }
@@ -377,8 +383,8 @@ public class HookEntry implements IXposedHookLoadPackage {
                     paint = (Paint) arg;
                 } else if (arg instanceof CharSequence && text == null) {
                     text = (CharSequence) arg;
-                } else if (arg instanceof String && text == null) {
-                    text = (String) arg;
+                } else if (arg instanceof char[] && text == null) {
+                    text = new String((char[]) arg);
                 }
             }
             if (paint == null || TextUtils.isEmpty(text)) {
@@ -900,6 +906,71 @@ public class HookEntry implements IXposedHookLoadPackage {
                 }
             } catch (Throwable t) {
                 FileLogger.w(TAG, "Dynamic Weex class not available: " + cms[0] + " for " + pkg);
+            }
+        }
+    }
+
+    /**
+     * Hook android.text.StaticLayout, DynamicLayout and BoringLayout constructors.
+     * Weex/native text views often build these layouts internally and then render
+     * them to a texture; replacing the paint typeface at layout creation time is
+     * the last reliable Java-layer interception point before rasterization.
+     */
+    private void hookTextLayoutConstructors(String pkg, ClassLoader cl) {
+        String[] classNames = {
+                "android.text.StaticLayout",
+                "android.text.DynamicLayout",
+                "android.text.BoringLayout"
+        };
+        for (String className : classNames) {
+            try {
+                Class<?> clazz = XposedHelpers.findClass(className, cl);
+                int hooked = 0;
+                for (Constructor<?> ctor : clazz.getDeclaredConstructors()) {
+                    Class<?>[] pts = ctor.getParameterTypes();
+                    boolean hasTextPaint = false;
+                    boolean hasText = false;
+                    for (Class<?> pt : pts) {
+                        if (TextPaint.class.isAssignableFrom(pt)) hasTextPaint = true;
+                        if (CharSequence.class.isAssignableFrom(pt)) hasText = true;
+                    }
+                    if (!hasTextPaint || !hasText) continue;
+                    hookConstructor(ctor, new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            if (applying.get()) return;
+                            try {
+                                TextPaint paint = null;
+                                CharSequence text = null;
+                                for (Object arg : param.args) {
+                                    if (arg instanceof TextPaint && paint == null) {
+                                        paint = (TextPaint) arg;
+                                    } else if (arg instanceof CharSequence && text == null) {
+                                        text = (CharSequence) arg;
+                                    }
+                                }
+                                if (paint == null || TextUtils.isEmpty(text)) return;
+                                Typeface desired = FontLoader.getTypefaceForText(text);
+                                if (desired != null && desired != paint.getTypeface()) {
+                                    applying.set(true);
+                                    try {
+                                        paint.setTypeface(desired);
+                                        FileLogger.i(TAG, className + " constructor paint replaced pkg=" + pkg
+                                                + " text=[" + text + "] -> " + FontLoader.getTypefaceName(desired));
+                                    } finally {
+                                        applying.set(false);
+                                    }
+                                }
+                            } catch (Throwable t) {
+                                FileLogger.e(TAG, className + " constructor hook failed for " + pkg, t);
+                            }
+                        }
+                    });
+                    hooked++;
+                }
+                FileLogger.i(TAG, "Hooked " + className + " constructors (" + hooked + ") for " + pkg);
+            } catch (Throwable t) {
+                FileLogger.e(TAG, "Failed to hook " + className + " constructors for " + pkg, t);
             }
         }
     }
