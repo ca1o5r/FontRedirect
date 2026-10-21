@@ -1,13 +1,13 @@
 # FontRedirect
 
-LSPosed 模块，强制目标应用使用指定的系统字体文件渲染文字。当前版本：3.8.8。
+LSPosed 模块，强制目标应用使用模块内置的三个字体文件渲染文字。当前版本：3.8.9。
 
 ## 工作原理
 
-- 启动时解析 `/etc/fonts.xml`，根据 `lang`、`variant` 等属性定位系统字体文件（英文 sans-serif、CJK 等）。
-- 对普通应用，直接用 `Typeface.Builder` / `Typeface.createFromFile` 加载 `/system/fonts/` 下的真实字体文件。
+- 模块**始终优先**使用 `assets/` 里的三个字体文件：启动时先把它们解压到目标应用的私有目录，再用 `Typeface.createFromFile` 加载。这样即使设备装了 Magisk 字体模块、`/etc/fonts.xml` 指向别的字体家族，被 hook 的应用也一定使用这三个文件。
+- 仅当内置字体无法加载时才回退解析 `/etc/fonts.xml`（英文 sans-serif、CJK 等），再不行就保持应用原有字体。
 - 英文（非 CJK）文本按样式区分：常规使用 `Latin.ttf`，斜体使用 `LatinItalic.ttf`；中日韩文本统一使用 `CJK.ttf`。
-- 对 Magisk DenyList 中的应用：其 mount namespace 被隔离，Magisk 字体 overlay 会被卸载，`/system/fonts` 回退为原厂字体。模块通过 `android.system.Os.stat()` 比较选中的 CJK 字体文件与 `/system/fonts/` 目录的 `st_dev`；若发现字体未被替换，则自动改用 APK 内置字体。
+- 解压出的文件名为 `font_redirect_<资源指纹>_<原文件名>`，启动时清理所有过期的 `font_redirect_*`，因此升级模块后一定是新字体。
 - 如果 DenyList 隔离导致 `createPackageContext()` 无法创建模块上下文，会直接从 APK 的 `assets/` 中解压内置字体继续工作。
 - 自动跳过以 `:Security` 结尾的银行自检进程，避免触发 Xposed 检测导致崩溃。
 - Hook 层级覆盖 `TextView`、`Paint.setTypeface`、`Canvas.drawText/drawTextRun`、WebView 的 `@font-face` 注入，以及 Flutter 应用的 `AAssetManager_open` GOT 重定向。
@@ -28,16 +28,16 @@ Flutter 不经过 Android 的 `TextView`/`Paint`，而是直接通过 Skia/Impel
 
 `app/src/main/assets/` 下包含三个替换字体，按文字类型与样式分工：
 
-| 文件 | 用途 |
-| --- | --- |
-| `CJK.ttf` | 中日韩文字（汉字、假名、谚文、全角标点） |
-| `Latin.ttf` | 非中日韩的常规（非斜体）文字 |
-| `LatinItalic.ttf` | 非中日韩的斜体文字 |
+| 文件 | 内部字体名 | 用途 |
+| --- | --- | --- |
+| `CJK.ttf` | `FRCJK` | 中日韩文字（汉字、假名、谚文、全角标点） |
+| `Latin.ttf` | `FRLatin`（Bold） | 非中日韩的常规（非斜体）文字 |
+| `LatinItalic.ttf` | `FRLatinItalic`（Italic） | 非中日韩的斜体文字 |
 
 判定规则：文本中包含 CJK 字符时一律使用 `CJK.ttf`（斜体 CJK 由系统合成倾斜）；否则根据 `Typeface` 的 `ITALIC` 样式位，或字体资源名中的 `italic` / `oblique` 关键字选择 `LatinItalic.ttf`，其余使用 `Latin.ttf`。
 
-- 系统字体未被替换时（例如处于 Magisk DenyList），Latin/CJK 会回退到上面这些内置字体。
-- 斜体始终来自内置的 `LatinItalic.ttf`：`/etc/fonts.xml` 只提供常规体，没有斜体变量。
+- 三个文件的字形数据未作任何改动，只重建了 `name` 表（family / full / PostScript 名），`OS/2` 与 `head` 的字重、斜体标志保持原样。
+- 内置字体是唯一字体来源；系统字体配置只在解压失败时兜底。
 - WebView 注入的 `@font-face` 同时注册 normal 与 italic 字面，页面中 `font-style: italic` 的元素会命中 `LatinItalic.ttf`。
 
 > 这三个文件是 DenyList 兼容所必需的。删除后，处于 DenyList 中的应用（例如 `cmb.pb`）将无法加载替换字体，回退到原厂字体。
@@ -106,9 +106,10 @@ app/build/outputs/apk/release/app-release.apk
 
 关键日志：
 
-- `Fonts loaded from system config` + `replaced=true`：正常使用了 Magisk 替换后的系统字体。
-- `CJK system font not replaced ... falling back to embedded fonts`：检测到 DenyList 或未挂载模块字体，已切换到内置字体。
-- `Fonts loaded from embedded assets via apk path`：DenyList 隔离导致 `createPackageContext()` 失败，直接从 APK 解压字体。
+- `Fonts loaded from embedded assets` / `Fonts loaded from embedded assets via apk path`：正常路径，三个内置字体已解压并加载（`latin=`、`latinItalic=`、`cjk=` 给出实际文件）。
+- `Failed to load embedded fonts ...`：解压或加载失败，此时才回退到系统字体配置。
+- `Fonts loaded from system config`：兜底路径，使用了 `/etc/fonts.xml` 指向的字体。
+- `extractAsset wrote <name> (<bytes>)`：字体因指纹变化而重新解压，说明升级后的新字体已生效。
 - `Flutter AAsset hook result=true`：成功在 Flutter 应用中 patch `libflutter.so` 的 GOT 表项。
 - `Flutter AAsset hook result=false`：`Application.onCreate` 时 `libflutter.so` 尚未加载，已启动后台轮询。
 - `Flutter AAsset GOT hook applied (x/y slots)`：后台轮询成功找到 `libflutter.so` 并 patch 了实际存在的 `x` 个 GOT 表项。
@@ -119,7 +120,7 @@ app/build/outputs/apk/release/app-release.apk
 - `app/src/main/assets/`：内置回退字体与 `xposed_init`
 - `app/src/main/java/org/c0fle4/FontRedirect/hook/`
   - `HookEntry.java`：Xposed 入口、进程过滤、Hook 注册
-  - `FontLoader.java`：系统字体解析与加载、DenyList 检测、内置字体回退
+  - `FontLoader.java`：内置字体解压与加载、字体选择、系统字体兜底
   - `SystemFontConfig.java`：解析 `/etc/fonts.xml`
   - `TypefaceSourceTracker.java`：追踪 Typeface 来源
   - `WebViewInjector.java`：WebView `@font-face` 注入

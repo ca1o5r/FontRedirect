@@ -46,13 +46,19 @@ public class FontLoader {
         String fingerprint = fingerprintFor(moduleContext);
         FileLogger.i(TAG, "Font asset fingerprint: " + fingerprint);
         cleanupStaleExtracts(targetContext, fingerprint);
-        if (loadSystemFonts()) {
-            // /etc/fonts.xml only exposes a regular Latin face, so the italic face
-            // always comes from the module's own assets.
-            loadEmbeddedItalic(moduleContext, targetContext, fingerprint);
+        // The module's own three faces are always the preferred source: they are
+        // exactly the files the user ships in assets/, so an app that is hooked
+        // never renders with the system font, even when a Magisk font module is
+        // installed and /etc/fonts.xml points at a different family.
+        if (loadEmbeddedFonts(moduleContext, targetContext, fingerprint)) {
             return;
         }
-        loadEmbeddedFonts(moduleContext, targetContext, fingerprint);
+        // Only when the embedded fonts cannot be loaded at all fall back to the
+        // system font config. /etc/fonts.xml only exposes a regular Latin face, so
+        // the italic face still comes from the module's own assets.
+        if (loadSystemFonts()) {
+            loadEmbeddedItalic(moduleContext, targetContext, fingerprint);
+        }
     }
 
     public static synchronized void init(String moduleApkPath, Context targetContext) {
@@ -115,8 +121,8 @@ public class FontLoader {
         }
     }
 
-    private static void loadEmbeddedFonts(Context moduleContext, Context targetContext,
-                                          String fingerprint) {
+    private static boolean loadEmbeddedFonts(Context moduleContext, Context targetContext,
+                                             String fingerprint) {
         try {
             File latin = extractAsset(moduleContext, targetContext, LATIN, fingerprint);
             File latinItalic = extractAsset(moduleContext, targetContext, LATIN_ITALIC, fingerprint);
@@ -130,10 +136,16 @@ public class FontLoader {
             latinName = "Latin";
             latinItalicName = "LatinItalic";
             cjkName = "CJK";
+            if (latinTypeface == null || latinItalicTypeface == null || cjkTypeface == null) {
+                FileLogger.e(TAG, "Typeface.createFromFile returned null for an embedded font", null);
+                return false;
+            }
             FileLogger.i(TAG, "Fonts loaded from embedded assets: latin=" + latinFile
                     + ", latinItalic=" + latinItalicFile + ", cjk=" + cjkFile);
+            return true;
         } catch (Throwable t) {
             FileLogger.e(TAG, "Failed to load embedded fonts", t);
+            return false;
         }
     }
 
@@ -245,8 +257,8 @@ public class FontLoader {
         return entry != null ? entry.getSize() : -1L;
     }
 
-    private static void loadEmbeddedFonts(String moduleApkPath, Context targetContext,
-                                          String fingerprint) {
+    private static boolean loadEmbeddedFonts(String moduleApkPath, Context targetContext,
+                                             String fingerprint) {
         try {
             File latin = extractAsset(moduleApkPath, targetContext, LATIN, fingerprint);
             File latinItalic = extractAsset(moduleApkPath, targetContext, LATIN_ITALIC, fingerprint);
@@ -260,10 +272,16 @@ public class FontLoader {
             latinName = "Latin";
             latinItalicName = "LatinItalic";
             cjkName = "CJK";
+            if (latinTypeface == null || latinItalicTypeface == null || cjkTypeface == null) {
+                FileLogger.e(TAG, "Typeface.createFromFile returned null for an embedded font", null);
+                return false;
+            }
             FileLogger.i(TAG, "Fonts loaded from embedded assets via apk path: latin=" + latinFile
                     + ", latinItalic=" + latinItalicFile + ", cjk=" + cjkFile);
+            return true;
         } catch (Throwable t) {
             FileLogger.e(TAG, "Failed to load embedded fonts from apk path", t);
+            return false;
         }
     }
 
