@@ -24,6 +24,8 @@ public class FontLoader {
     public static final String LATIN_ITALIC = "LatinItalic.ttf";
     /** Chinese / Japanese / Korean text. */
     public static final String CJK = "CJK.ttf";
+    /** Prefix of every font file this module writes into the target app's files dir. */
+    private static final String EXTRACT_PREFIX = "font_redirect_";
 
     private static Typeface latinTypeface;
     private static Typeface latinItalicTypeface;
@@ -41,14 +43,16 @@ public class FontLoader {
             FileLogger.i(TAG, "Fonts already loaded");
             return;
         }
-        cleanupStaleExtracts(targetContext);
+        String fingerprint = fingerprintFor(moduleContext);
+        FileLogger.i(TAG, "Font asset fingerprint: " + fingerprint);
+        cleanupStaleExtracts(targetContext, fingerprint);
         if (loadSystemFonts()) {
             // /etc/fonts.xml only exposes a regular Latin face, so the italic face
             // always comes from the module's own assets.
-            loadEmbeddedItalic(moduleContext, targetContext);
+            loadEmbeddedItalic(moduleContext, targetContext, fingerprint);
             return;
         }
-        loadEmbeddedFonts(moduleContext, targetContext);
+        loadEmbeddedFonts(moduleContext, targetContext, fingerprint);
     }
 
     public static synchronized void init(String moduleApkPath, Context targetContext) {
@@ -56,13 +60,15 @@ public class FontLoader {
             FileLogger.i(TAG, "Fonts already loaded");
             return;
         }
-        cleanupStaleExtracts(targetContext);
+        String fingerprint = fingerprintForApk(moduleApkPath);
+        FileLogger.i(TAG, "Font asset fingerprint: " + fingerprint);
+        cleanupStaleExtracts(targetContext, fingerprint);
         // This entry point is only used when createPackageContext() failed, which
         // typically happens for Magisk DenyList apps running in an isolated mount
         // namespace. In that namespace /system/fonts is the stock firmware, not the
         // Magisk-module replacement, so parsing /etc/fonts.xml would load the wrong
         // fonts. Always use the module's own embedded fonts here.
-        loadEmbeddedFonts(moduleApkPath, targetContext);
+        loadEmbeddedFonts(moduleApkPath, targetContext, fingerprint);
     }
 
     private static boolean loadSystemFonts() {
@@ -109,11 +115,12 @@ public class FontLoader {
         }
     }
 
-    private static void loadEmbeddedFonts(Context moduleContext, Context targetContext) {
+    private static void loadEmbeddedFonts(Context moduleContext, Context targetContext,
+                                          String fingerprint) {
         try {
-            File latin = extractAsset(moduleContext, targetContext, LATIN);
-            File latinItalic = extractAsset(moduleContext, targetContext, LATIN_ITALIC);
-            File cjk = extractAsset(moduleContext, targetContext, CJK);
+            File latin = extractAsset(moduleContext, targetContext, LATIN, fingerprint);
+            File latinItalic = extractAsset(moduleContext, targetContext, LATIN_ITALIC, fingerprint);
+            File cjk = extractAsset(moduleContext, targetContext, CJK, fingerprint);
             latinFile = latin;
             latinItalicFile = latinItalic;
             cjkFile = cjk;
@@ -135,12 +142,13 @@ public class FontLoader {
      * and CJK faces come from the system font config, which has no italic variant of
      * the replacement font.
      */
-    private static void loadEmbeddedItalic(Context moduleContext, Context targetContext) {
+    private static void loadEmbeddedItalic(Context moduleContext, Context targetContext,
+                                           String fingerprint) {
         if (latinItalicTypeface != null) {
             return;
         }
         try {
-            File latinItalic = extractAsset(moduleContext, targetContext, LATIN_ITALIC);
+            File latinItalic = extractAsset(moduleContext, targetContext, LATIN_ITALIC, fingerprint);
             latinItalicFile = latinItalic;
             latinItalicTypeface = Typeface.createFromFile(latinItalic);
             latinItalicName = "LatinItalic";
@@ -151,22 +159,37 @@ public class FontLoader {
     }
 
     /**
-     * Releases before 3.8.5 shipped Roboto-Regular.ttf / OSans-RC-Regular.ttf and
-     * extracted them into the target app's files dir. Drop those copies once so an
-     * upgrade does not keep ~33 MB of unused fonts per target app.
+     * Every extracted font is named {@code font_redirect_<fingerprint>_<asset>}, where the
+     * fingerprint is derived from the fonts bundled in the module APK. Anything carrying a
+     * different fingerprint was written by an earlier module build (including the fixed
+     * Roboto-Regular / OSans-RC-Regular names used before 3.8.5), so it is deleted and
+     * re-extracted. Without this an updated build kept reusing the fonts of the previous
+     * one, which made font updates appear to do nothing.
      */
-    private static void cleanupStaleExtracts(Context targetContext) {
+    private static void cleanupStaleExtracts(Context targetContext, String fingerprint) {
         if (staleExtractsCleaned || targetContext == null) {
             return;
         }
         staleExtractsCleaned = true;
-        String[] stale = {"font_redirect_Roboto-Regular.ttf", "font_redirect_OSans-RC-Regular.ttf"};
         try {
             File dir = targetContext.getFilesDir();
-            for (String name : stale) {
-                File f = new File(dir, name);
-                if (f.exists() && f.delete()) {
-                    FileLogger.i(TAG, "Removed stale embedded font " + f);
+            File[] files = dir != null ? dir.listFiles() : null;
+            if (files == null) {
+                return;
+            }
+            String keepLatin = extractName(fingerprint, LATIN);
+            String keepItalic = extractName(fingerprint, LATIN_ITALIC);
+            String keepCjk = extractName(fingerprint, CJK);
+            for (File f : files) {
+                String name = f.getName();
+                if (!f.isFile() || !name.startsWith(EXTRACT_PREFIX)) {
+                    continue;
+                }
+                if (name.equals(keepLatin) || name.equals(keepItalic) || name.equals(keepCjk)) {
+                    continue;
+                }
+                if (f.delete()) {
+                    FileLogger.i(TAG, "Removed stale embedded font " + name);
                 }
             }
         } catch (Throwable t) {
@@ -174,11 +197,60 @@ public class FontLoader {
         }
     }
 
-    private static void loadEmbeddedFonts(String moduleApkPath, Context targetContext) {
+    private static String extractName(String fingerprint, String assetName) {
+        return fingerprint == null
+                ? EXTRACT_PREFIX + assetName
+                : EXTRACT_PREFIX + fingerprint + "_" + assetName;
+    }
+
+    /**
+     * Identifies the fonts bundled in the module APK. Replacing a font asset changes the
+     * compressed entry size, so the copies extracted by the previous build are dropped.
+     */
+    private static String fingerprintFor(Context moduleContext) {
+        if (moduleContext == null) {
+            return null;
+        }
         try {
-            File latin = extractAsset(moduleApkPath, targetContext, LATIN);
-            File latinItalic = extractAsset(moduleApkPath, targetContext, LATIN_ITALIC);
-            File cjk = extractAsset(moduleApkPath, targetContext, CJK);
+            return fingerprintForApk(moduleContext.getPackageCodePath());
+        } catch (Throwable t) {
+            FileLogger.e(TAG, "fingerprintFor failed", t);
+            return null;
+        }
+    }
+
+    private static String fingerprintForApk(String moduleApkPath) {
+        if (moduleApkPath == null) {
+            return null;
+        }
+        try {
+            long apkLength = new File(moduleApkPath).length();
+            try (ZipFile zf = new ZipFile(moduleApkPath)) {
+                long latin = assetSize(zf, LATIN);
+                long italic = assetSize(zf, LATIN_ITALIC);
+                long cjk = assetSize(zf, CJK);
+                if (latin <= 0 || italic <= 0 || cjk <= 0) {
+                    return null;
+                }
+                return apkLength + "-" + latin + "-" + italic + "-" + cjk;
+            }
+        } catch (Throwable t) {
+            FileLogger.e(TAG, "fingerprintForApk failed for " + moduleApkPath, t);
+            return null;
+        }
+    }
+
+    private static long assetSize(ZipFile zf, String assetName) {
+        ZipEntry entry = zf.getEntry("assets/" + assetName);
+        return entry != null ? entry.getSize() : -1L;
+    }
+
+    private static void loadEmbeddedFonts(String moduleApkPath, Context targetContext,
+                                          String fingerprint) {
+        try {
+            File latin = extractAsset(moduleApkPath, targetContext, LATIN, fingerprint);
+            File latinItalic = extractAsset(moduleApkPath, targetContext, LATIN_ITALIC, fingerprint);
+            File cjk = extractAsset(moduleApkPath, targetContext, CJK, fingerprint);
             latinFile = latin;
             latinItalicFile = latinItalic;
             cjkFile = cjk;
@@ -195,11 +267,12 @@ public class FontLoader {
         }
     }
 
-    private static File extractAsset(Context moduleContext, Context targetContext, String name) throws IOException {
-        File out = new File(targetContext.getFilesDir(), "font_redirect_" + name);
+    private static File extractAsset(Context moduleContext, Context targetContext, String name,
+                                     String fingerprint) throws IOException {
+        File out = new File(targetContext.getFilesDir(), extractName(fingerprint, name));
         FileLogger.i(TAG, "extractAsset target=" + out.getAbsolutePath());
         if (out.exists() && out.length() > 0) {
-            FileLogger.i(TAG, "extractAsset reusing existing " + name);
+            FileLogger.i(TAG, "extractAsset reusing existing " + name + " (" + out.length() + " bytes)");
             return out;
         }
         AssetManager am = moduleContext.getAssets();
@@ -216,17 +289,20 @@ public class FontLoader {
         return out;
     }
 
-    private static File extractAsset(String moduleApkPath, Context targetContext, String name) throws IOException {
-        File out = new File(targetContext.getFilesDir(), "font_redirect_" + name);
+    private static File extractAsset(String moduleApkPath, Context targetContext, String name,
+                                     String fingerprint) throws IOException {
+        File out = new File(targetContext.getFilesDir(), extractName(fingerprint, name));
         FileLogger.i(TAG, "extractAsset target=" + out.getAbsolutePath());
-        if (out.exists() && out.length() > 0) {
-            FileLogger.i(TAG, "extractAsset reusing existing " + name);
-            return out;
-        }
         try (ZipFile zf = new ZipFile(moduleApkPath)) {
             ZipEntry entry = zf.getEntry("assets/" + name);
             if (entry == null) {
                 throw new IOException("assets/" + name + " not found in " + moduleApkPath);
+            }
+            long expected = entry.getSize();
+            if (out.exists() && out.length() > 0
+                    && (expected <= 0 || out.length() == expected)) {
+                FileLogger.i(TAG, "extractAsset reusing existing " + name + " (" + out.length() + " bytes)");
+                return out;
             }
             try (InputStream is = zf.getInputStream(entry);
                  FileOutputStream fos = new FileOutputStream(out)) {
