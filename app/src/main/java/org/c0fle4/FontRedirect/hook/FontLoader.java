@@ -18,32 +18,45 @@ import java.util.zip.ZipFile;
 public class FontLoader {
     private static final String TAG = "FontRedirect";
     private static final String SYSTEM_FONT_DIR = "/system/fonts/";
-    public static final String ROBOTO = "Roboto-Regular.ttf";
-    public static final String OSANS_RC = "OSans-RC-Regular.ttf";
+    /** Regular text that is not CJK. */
+    public static final String LATIN = "Latin.ttf";
+    /** Italic text that is not CJK. */
+    public static final String LATIN_ITALIC = "LatinItalic.ttf";
+    /** Chinese / Japanese / Korean text. */
+    public static final String CJK = "CJK.ttf";
 
     private static Typeface latinTypeface;
+    private static Typeface latinItalicTypeface;
     private static Typeface cjkTypeface;
     private static File latinFile;
+    private static File latinItalicFile;
     private static File cjkFile;
     private static String latinName = "latin";
+    private static String latinItalicName = "latin-italic";
     private static String cjkName = "cjk";
+    private static boolean staleExtractsCleaned;
 
     public static synchronized void init(Context moduleContext, Context targetContext) {
-        if (latinTypeface != null && cjkTypeface != null) {
+        if (latinTypeface != null && cjkTypeface != null && latinItalicTypeface != null) {
             FileLogger.i(TAG, "Fonts already loaded");
             return;
         }
+        cleanupStaleExtracts(targetContext);
         if (loadSystemFonts()) {
+            // /etc/fonts.xml only exposes a regular Latin face, so the italic face
+            // always comes from the module's own assets.
+            loadEmbeddedItalic(moduleContext, targetContext);
             return;
         }
         loadEmbeddedFonts(moduleContext, targetContext);
     }
 
     public static synchronized void init(String moduleApkPath, Context targetContext) {
-        if (latinTypeface != null && cjkTypeface != null) {
+        if (latinTypeface != null && cjkTypeface != null && latinItalicTypeface != null) {
             FileLogger.i(TAG, "Fonts already loaded");
             return;
         }
+        cleanupStaleExtracts(targetContext);
         // This entry point is only used when createPackageContext() failed, which
         // typically happens for Magisk DenyList apps running in an isolated mount
         // namespace. In that namespace /system/fonts is the stock firmware, not the
@@ -98,31 +111,85 @@ public class FontLoader {
 
     private static void loadEmbeddedFonts(Context moduleContext, Context targetContext) {
         try {
-            File robotoFile = extractAsset(moduleContext, targetContext, ROBOTO);
-            File osansRcFile = extractAsset(moduleContext, targetContext, OSANS_RC);
-            latinFile = robotoFile;
-            cjkFile = osansRcFile;
-            latinTypeface = Typeface.createFromFile(robotoFile);
-            cjkTypeface = Typeface.createFromFile(osansRcFile);
-            latinName = "Roboto";
-            cjkName = "OSans-RC";
-            FileLogger.i(TAG, "Fonts loaded from embedded assets: roboto=" + latinFile + ", osans=" + cjkFile);
+            File latin = extractAsset(moduleContext, targetContext, LATIN);
+            File latinItalic = extractAsset(moduleContext, targetContext, LATIN_ITALIC);
+            File cjk = extractAsset(moduleContext, targetContext, CJK);
+            latinFile = latin;
+            latinItalicFile = latinItalic;
+            cjkFile = cjk;
+            latinTypeface = Typeface.createFromFile(latin);
+            latinItalicTypeface = Typeface.createFromFile(latinItalic);
+            cjkTypeface = Typeface.createFromFile(cjk);
+            latinName = "Latin";
+            latinItalicName = "LatinItalic";
+            cjkName = "CJK";
+            FileLogger.i(TAG, "Fonts loaded from embedded assets: latin=" + latinFile
+                    + ", latinItalic=" + latinItalicFile + ", cjk=" + cjkFile);
         } catch (Throwable t) {
             FileLogger.e(TAG, "Failed to load embedded fonts", t);
         }
     }
 
+    /**
+     * Loads only the italic Latin face from the module assets. Called when the Latin
+     * and CJK faces come from the system font config, which has no italic variant of
+     * the replacement font.
+     */
+    private static void loadEmbeddedItalic(Context moduleContext, Context targetContext) {
+        if (latinItalicTypeface != null) {
+            return;
+        }
+        try {
+            File latinItalic = extractAsset(moduleContext, targetContext, LATIN_ITALIC);
+            latinItalicFile = latinItalic;
+            latinItalicTypeface = Typeface.createFromFile(latinItalic);
+            latinItalicName = "LatinItalic";
+            FileLogger.i(TAG, "Italic font loaded from embedded assets: " + latinItalicFile);
+        } catch (Throwable t) {
+            FileLogger.e(TAG, "Failed to load embedded italic font", t);
+        }
+    }
+
+    /**
+     * Releases before 3.8.5 shipped Roboto-Regular.ttf / OSans-RC-Regular.ttf and
+     * extracted them into the target app's files dir. Drop those copies once so an
+     * upgrade does not keep ~33 MB of unused fonts per target app.
+     */
+    private static void cleanupStaleExtracts(Context targetContext) {
+        if (staleExtractsCleaned || targetContext == null) {
+            return;
+        }
+        staleExtractsCleaned = true;
+        String[] stale = {"font_redirect_Roboto-Regular.ttf", "font_redirect_OSans-RC-Regular.ttf"};
+        try {
+            File dir = targetContext.getFilesDir();
+            for (String name : stale) {
+                File f = new File(dir, name);
+                if (f.exists() && f.delete()) {
+                    FileLogger.i(TAG, "Removed stale embedded font " + f);
+                }
+            }
+        } catch (Throwable t) {
+            FileLogger.e(TAG, "Failed to remove stale embedded fonts", t);
+        }
+    }
+
     private static void loadEmbeddedFonts(String moduleApkPath, Context targetContext) {
         try {
-            File robotoFile = extractAsset(moduleApkPath, targetContext, ROBOTO);
-            File osansRcFile = extractAsset(moduleApkPath, targetContext, OSANS_RC);
-            latinFile = robotoFile;
-            cjkFile = osansRcFile;
-            latinTypeface = Typeface.createFromFile(robotoFile);
-            cjkTypeface = Typeface.createFromFile(osansRcFile);
-            latinName = "Roboto";
-            cjkName = "OSans-RC";
-            FileLogger.i(TAG, "Fonts loaded from embedded assets via apk path: roboto=" + latinFile + ", osans=" + cjkFile);
+            File latin = extractAsset(moduleApkPath, targetContext, LATIN);
+            File latinItalic = extractAsset(moduleApkPath, targetContext, LATIN_ITALIC);
+            File cjk = extractAsset(moduleApkPath, targetContext, CJK);
+            latinFile = latin;
+            latinItalicFile = latinItalic;
+            cjkFile = cjk;
+            latinTypeface = Typeface.createFromFile(latin);
+            latinItalicTypeface = Typeface.createFromFile(latinItalic);
+            cjkTypeface = Typeface.createFromFile(cjk);
+            latinName = "Latin";
+            latinItalicName = "LatinItalic";
+            cjkName = "CJK";
+            FileLogger.i(TAG, "Fonts loaded from embedded assets via apk path: latin=" + latinFile
+                    + ", latinItalic=" + latinItalicFile + ", cjk=" + cjkFile);
         } catch (Throwable t) {
             FileLogger.e(TAG, "Failed to load embedded fonts from apk path", t);
         }
@@ -176,10 +243,19 @@ public class FontLoader {
     }
 
     public static Typeface getTypefaceForText(CharSequence text) {
+        return getTypefaceForText(text, false);
+    }
+
+    public static Typeface getTypefaceForText(CharSequence text, boolean italic) {
         if (text == null || text.length() == 0) {
             return null;
         }
-        return containsCJK(text) ? cjkTypeface : latinTypeface;
+        if (containsCJK(text)) {
+            return cjkTypeface;
+        }
+        Typeface face = italic ? latinItalicTypeface : latinTypeface;
+        // Fall back to the regular face when the italic asset could not be loaded.
+        return face != null ? face : latinTypeface;
     }
 
     public static Typeface getCjkTypeface() {
@@ -190,8 +266,31 @@ public class FontLoader {
         return latinTypeface;
     }
 
+    public static Typeface getLatinItalicTypeface() {
+        return latinItalicTypeface;
+    }
+
+    /**
+     * True when the Typeface is explicitly styled italic or is the module's own
+     * italic replacement face. Typeface.createFromFile() reports style NORMAL for
+     * italic font files, so identity is checked as well.
+     */
+    public static boolean isItalicTypeface(Typeface tf) {
+        if (tf == null) {
+            return false;
+        }
+        if ((tf.getStyle() & Typeface.ITALIC) != 0) {
+            return true;
+        }
+        return tf == latinItalicTypeface;
+    }
+
     public static File getLatinFontFile() {
         return latinFile;
+    }
+
+    public static File getLatinItalicFontFile() {
+        return latinItalicFile;
     }
 
     public static File getCjkFontFile() {
@@ -201,6 +300,7 @@ public class FontLoader {
     public static String getTypefaceName(Typeface tf) {
         if (tf == null) return "null";
         if (tf == latinTypeface) return latinName;
+        if (tf == latinItalicTypeface) return latinItalicName;
         if (tf == cjkTypeface) return cjkName;
         return "other(" + tf.hashCode() + ")";
     }

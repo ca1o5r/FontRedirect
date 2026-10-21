@@ -24,31 +24,14 @@ public class WebViewInjector {
     private static final String FONT_DOMAIN = "fontredirect.local";
     private static final String STYLE_ID = "__font_redirect_style__";
     private static final String FONT_PATH_LATIN = "/latin";
+    private static final String FONT_PATH_LATIN_ITALIC = "/latin-italic";
     private static final String FONT_PATH_CJK = "/cjk";
-
-    // Apps whose WebViews are used for native UI navigation rather than content
-    // rendering. Wrapping their WebViewClient or injecting CSS can break clicks,
-    // device control pages, or payment flows.
-    private static final java.util.Set<String> SKIP_PACKAGES = new java.util.HashSet<>(java.util.Arrays.asList(
-            "tv.twitch.android.app",
-            "com.xiaomi.smarthome",
-            "com.android.chrome",
-            "com.chrome.beta",
-            "com.chrome.dev",
-            "com.chrome.canary",
-            "org.mozilla.firefox",
-            "com.microsoft.emmx",
-            "com.opera.browser",
-            "com.brave.browser"
-    ));
 
     public static void hook(String pkg, ClassLoader cl) {
         // Twitch uses bot-protection WebViews (passport.twitch.tv); wrapping the
         // WebViewClient and injecting CSS breaks the Live tab content loader.
-        // Xiaomi Home uses WebViews for device control pages; wrapping the client
-        // breaks taps such as opening "Mijia Ceiling...".
-        if (SKIP_PACKAGES.contains(pkg)) {
-            FileLogger.i(TAG, "Skipping WebView injection for " + pkg + " to avoid UI interference");
+        if ("tv.twitch.android.app".equals(pkg)) {
+            FileLogger.i(TAG, "Skipping WebView injection for Twitch to avoid bot-protection interference");
             return;
         }
         hookSetWebViewClient(pkg, cl);
@@ -238,6 +221,8 @@ public class WebViewInjector {
             File fontFile;
             if (FONT_PATH_LATIN.equals(path)) {
                 fontFile = FontLoader.getLatinFontFile();
+            } else if (FONT_PATH_LATIN_ITALIC.equals(path)) {
+                fontFile = FontLoader.getLatinItalicFontFile();
             } else if (FONT_PATH_CJK.equals(path)) {
                 fontFile = FontLoader.getCjkFontFile();
             } else if ("/diag.png".equals(path)) {
@@ -334,15 +319,29 @@ public class WebViewInjector {
 
     private static String buildCss() {
         String latinFormat = getFontFormat(FontLoader.getLatinFontFile());
+        String latinItalicFormat = getFontFormat(FontLoader.getLatinItalicFontFile());
         String cjkFormat = getFontFormat(FontLoader.getCjkFontFile());
+        String latinRange = "U+0000-024F, U+02B0-02FF, U+1E00-1EFF, U+2000-206F, U+2070-209F, U+20A0-20CF, U+2100-214F, U+2200-22FF, U+FB00-FB4F;";
         return "@font-face {" +
                 "  font-family: 'FontRedirect';" +
+                "  font-style: normal;" +
+                "  font-weight: normal;" +
                 "  src: url('https://" + FONT_DOMAIN + FONT_PATH_LATIN + "') format('" + latinFormat + "');" +
-                "  unicode-range: U+0000-024F, U+02B0-02FF, U+1E00-1EFF, U+2000-206F, U+2070-209F, U+20A0-20CF, U+2100-214F, U+2200-22FF, U+FB00-FB4F;" +
+                "  unicode-range: " + latinRange +
                 "  font-display: swap;" +
                 "}" +
                 "@font-face {" +
                 "  font-family: 'FontRedirect';" +
+                "  font-style: italic;" +
+                "  font-weight: normal;" +
+                "  src: url('https://" + FONT_DOMAIN + FONT_PATH_LATIN_ITALIC + "') format('" + latinItalicFormat + "');" +
+                "  unicode-range: " + latinRange +
+                "  font-display: swap;" +
+                "}" +
+                "@font-face {" +
+                "  font-family: 'FontRedirect';" +
+                "  font-style: normal;" +
+                "  font-weight: normal;" +
                 "  src: url('https://" + FONT_DOMAIN + FONT_PATH_CJK + "') format('" + cjkFormat + "');" +
                 "  unicode-range: U+2E80-9FFF, U+3040-309F, U+30A0-30FF, U+31F0-31FF, U+AC00-D7AF, U+F900-FAFF, U+FF00-FFEF;" +
                 "  font-display: swap;" +

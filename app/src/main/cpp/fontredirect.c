@@ -1,6 +1,6 @@
-// FontRedirect native Flutter / Unicorn AAsset hook.
-// Patches libflutter.so and libunicorn.so GOT entries for AAsset* imports so
-// bundled font assets can be redirected to replacement font files at runtime.
+// FontRedirect native Flutter AAsset hook.
+// Patches libflutter.so's GOT entries for AAsset* imports so bundled font
+// assets can be redirected to replacement font files at runtime.
 
 #include <android/asset_manager.h>
 #include <android/log.h>
@@ -35,28 +35,12 @@
 
 #define MAGIC_FAKE_ASSET 0x46524454u  // "FRT"
 #define MAX_SYMBOLS 16
-#define MAX_TARGET_LIBS 8
 
 // Replacement font paths configured from Java.
 static char s_latin_path[512];
 static char s_cjk_path[512];
+static volatile int s_hooked = 0;
 static pthread_mutex_t s_init_lock = PTHREAD_MUTEX_INITIALIZER;
-
-// Target native libraries that load bundled fonts through AAssetManager.
-// Ele.me's home page is rendered by Weex/Unicorn, which may load fonts from
-// assets or from extracted cache files. Include all likely Weex/Flutter libs.
-static const char *s_target_libs[MAX_TARGET_LIBS] = {
-    "libflutter.so",
-    "libunicorn.so",
-    "libweex_framework.so",
-    "libweexjsb.so",
-    "libweexcore.so",
-    "libweexuikit.so",
-    "libweexjss.so",
-    "libweexjsc.so"
-};
-static int s_lib_hooked[MAX_TARGET_LIBS] = {0};
-static int s_any_hooked = 0;
 
 // Original function pointers saved before GOT patching.
 static AAsset *(*orig_AAssetManager_open)(AAssetManager *, const char *, int);
@@ -179,7 +163,7 @@ static inline int is_fake(AAsset *asset) {
     return fake->magic == MAGIC_FAKE_ASSET;
 }
 
-// Replacement AAsset* functions exposed to libflutter.so / libunicorn.so.
+// Replacement AAsset* functions exposed to libflutter.so.
 static AAsset *my_AAssetManager_open(AAssetManager *mgr, const char *filename, int mode) {
     if (!is_font_asset(filename)) {
         return orig_AAssetManager_open(mgr, filename, mode);
@@ -239,7 +223,7 @@ static void my_AAsset_close(AAsset *asset) {
 }
 
 // -------------------------------------------------------------------------
-// ELF parsing to locate GOT slots in a target shared library.
+// ELF parsing to locate GOT slots in libflutter.so.
 // -------------------------------------------------------------------------
 typedef struct {
     const char *lib_name;
@@ -292,6 +276,7 @@ static void scan_relocations(ElfW(Addr) base,
         if (!is_target_relocation(type)) continue;
 
         size_t sym_idx = REL_SYM(r_info);
+        // REL_SYM works for both ELF32 and ELF64 on the fields we use.
         if (sym_idx == 0) continue;
         const char *sym_name = strtab + symtab[sym_idx].st_name;
 
@@ -302,8 +287,7 @@ static void scan_relocations(ElfW(Addr) base,
                 ctx->slots[j] = slot;
                 ctx->originals[j] = *(void **) slot;
                 ctx->found++;
-                LOGI("found GOT slot for %s in %s at %p -> %p",
-                     sym_name, ctx->lib_name, slot, ctx->originals[j]);
+                LOGI("found GOT slot for %s at %p -> %p", sym_name, slot, ctx->originals[j]);
                 break;
             }
         }
@@ -395,62 +379,34 @@ static int patch_got(got_find_ctx *ctx, void *replacements[]) {
     int patched = 0;
     for (int i = 0; i < ctx->count; ++i) {
         if (ctx->slots[i] == NULL) {
-            LOGI("GOT slot not present for %s in %s (optional)",
-                 ctx->names[i], ctx->lib_name);
+            LOGI("GOT slot not present for %s (optional)", ctx->names[i]);
             continue;
         }
         if (make_writable(ctx->slots[i]) != 0) {
-            LOGW("mprotect failed for %s in %s", ctx->names[i], ctx->lib_name);
+            LOGW("mprotect failed for %s", ctx->names[i]);
             continue;
         }
         *(void **) ctx->slots[i] = replacements[i];
         patched++;
-        LOGI("patched %s in %s -> %p", ctx->names[i], ctx->lib_name, replacements[i]);
+        LOGI("patched %s -> %p", ctx->names[i], replacements[i]);
     }
     return patched;
-}
-
-static void save_originals(got_find_ctx *ctx) {
-    if (ctx->originals[0] != NULL)
-        orig_AAssetManager_open = (AAsset *(*)(AAssetManager *, const char *, int)) ctx->originals[0];
-    if (ctx->originals[1] != NULL)
-        orig_AAsset_getBuffer = (const void *(*)(AAsset *)) ctx->originals[1];
-    if (ctx->originals[2] != NULL)
-        orig_AAsset_getLength = (off_t (*)(AAsset *)) ctx->originals[2];
-    if (ctx->originals[3] != NULL)
-        orig_AAsset_getLength64 = (off64_t (*)(AAsset *)) ctx->originals[3];
-    if (ctx->originals[4] != NULL)
-        orig_AAsset_read = (int (*)(AAsset *, void *, size_t)) ctx->originals[4];
-    if (ctx->originals[5] != NULL)
-        orig_AAsset_close = (void (*)(AAsset *)) ctx->originals[5];
-}
-
-// -------------------------------------------------------------------------
-// Diagnostic: log all currently loaded modules so we can see which Weex/
-// Unicorn/Flutter libraries are present when the hook runs.
-// -------------------------------------------------------------------------
-static int log_modules_callback(struct dl_phdr_info *info, size_t size, void *data) {
-    (void) size;
-    (void) data;
-    if (info->dlpi_name) {
-        LOGI("loaded module: %s base=0x%llx", info->dlpi_name,
-             (unsigned long long) info->dlpi_addr);
-    }
-    return 0;
-}
-
-static void log_loaded_modules(void) {
-    LOGI("--- begin loaded modules ---");
-    dl_iterate_phdr(log_modules_callback, NULL);
-    LOGI("--- end loaded modules ---");
 }
 
 // -------------------------------------------------------------------------
 // Hook installation.
 // -------------------------------------------------------------------------
 static int do_hook_internal(void) {
-    pthread_mutex_lock(&s_init_lock);
+    if (__atomic_load_n(&s_hooked, __ATOMIC_ACQUIRE)) return 1;
 
+    pthread_mutex_lock(&s_init_lock);
+    if (__atomic_load_n(&s_hooked, __ATOMIC_RELAXED)) {
+        pthread_mutex_unlock(&s_init_lock);
+        return 1;
+    }
+
+    got_find_ctx ctx;
+    memset(&ctx, 0, sizeof(ctx));
     const char *names[] = {
         "AAssetManager_open",
         "AAsset_getBuffer",
@@ -467,70 +423,46 @@ static int do_hook_internal(void) {
         my_AAsset_read,
         my_AAsset_close,
     };
+    ctx.count = sizeof(names) / sizeof(names[0]);
+    for (int i = 0; i < ctx.count; ++i) ctx.names[i] = names[i];
 
-    int incomplete = 0;
-    int hooked_now = 0;
-
-    for (int k = 0; k < MAX_TARGET_LIBS; ++k) {
-        if (s_lib_hooked[k]) continue;
-
-        got_find_ctx ctx;
-        memset(&ctx, 0, sizeof(ctx));
-        ctx.count = sizeof(names) / sizeof(names[0]);
-        for (int i = 0; i < ctx.count; ++i) ctx.names[i] = names[i];
-
-        int found = find_got_slots(s_target_libs[k], &ctx);
-        if (found == 0) {
-            LOGI("%s not loaded or no AAsset symbols found", s_target_libs[k]);
-            continue;
-        }
-
-        int patched = patch_got(&ctx, replacements);
-        if (patched == found) {
-            save_originals(&ctx);
-            s_lib_hooked[k] = 1;
-            hooked_now = 1;
-            s_any_hooked = 1;
-            LOGI("AAsset GOT hook applied to %s (%d/%d slots)",
-                 s_target_libs[k], patched, ctx.count);
-        } else {
-            LOGW("AAsset hook incomplete for %s: patched %d/%d found %d",
-                 s_target_libs[k], patched, ctx.count, found);
-            incomplete = 1;
-        }
+    int found = find_got_slots("libflutter.so", &ctx);
+    if (found == 0) {
+        LOGW("libflutter.so not loaded or no AAsset symbols found, deferring");
+        pthread_mutex_unlock(&s_init_lock);
+        return 0;
     }
 
-    pthread_mutex_unlock(&s_init_lock);
-
-    // Keep polling until at least one target library has been hooked and all
-    // currently-loaded target libraries are fully patched.
-    if (s_any_hooked && !incomplete) {
+    int patched = patch_got(&ctx, replacements);
+    if (patched == found) {
+        // Save originals for the slots we actually patched.
+        orig_AAssetManager_open = ctx.originals[0];
+        orig_AAsset_getBuffer = ctx.originals[1];
+        orig_AAsset_getLength = ctx.originals[2];
+        orig_AAsset_getLength64 = ctx.originals[3];
+        orig_AAsset_read = ctx.originals[4];
+        orig_AAsset_close = ctx.originals[5];
+        __atomic_store_n(&s_hooked, 1, __ATOMIC_RELEASE);
+        LOGI("Flutter AAsset GOT hook applied (%d/%d slots)", patched, ctx.count);
+        pthread_mutex_unlock(&s_init_lock);
         return 1;
     }
+
+    LOGW("Flutter hook incomplete: patched %d/%d found %d", patched, ctx.count, found);
+    pthread_mutex_unlock(&s_init_lock);
     return 0;
 }
 
 static void *poll_hook_thread(void *arg) {
     (void) arg;
-    // Poll frequently at startup while target libraries are normally loaded,
-    // then back off for late/lazy-loaded libraries such as libunicorn.so and
-    // the various Weex libraries. Ele.me's Weex engine can load several seconds
-    // after process start, so keep polling for up to ~90 seconds total.
     for (int i = 0; i < 50; ++i) {
         if (do_hook_internal()) {
-            LOGI("Native AAsset hook applied from poll thread");
+            LOGI("Flutter hook applied from poll thread");
             return NULL;
         }
         usleep(100 * 1000);  // 100 ms
     }
-    for (int i = 0; i < 120; ++i) {
-        if (do_hook_internal()) {
-            LOGI("Native AAsset hook applied from poll thread (late)");
-            return NULL;
-        }
-        usleep(500 * 1000);  // 500 ms
-    }
-    LOGW("Native AAsset hook poll thread timed out");
+    LOGW("Flutter hook poll thread timed out");
     return NULL;
 }
 
@@ -569,14 +501,10 @@ Java_org_c0fle4_FontRedirect_hook_FontRedirectNative_hookFlutter(
 
     LOGI("hookFlutter called latin=%s cjk=%s", s_latin_path, s_cjk_path);
 
-    // Log the module landscape before we start scanning. This helps diagnose
-    // whether the Weex/Flutter libraries were already loaded when the hook ran.
-    log_loaded_modules();
-
     if (do_hook_internal()) {
         return JNI_TRUE;
     }
-    // Target libraries may not be loaded yet; start a background poll.
+    // libflutter.so may not be loaded yet; start a background poll.
     start_poll_if_needed();
     return JNI_FALSE;
 }

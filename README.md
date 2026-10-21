@@ -1,11 +1,12 @@
 # FontRedirect
 
-LSPosed 模块，强制目标应用使用指定的系统字体文件渲染文字。当前版本：3.8.4。
+LSPosed 模块，强制目标应用使用指定的系统字体文件渲染文字。当前版本：3.8.5。
 
 ## 工作原理
 
 - 启动时解析 `/etc/fonts.xml`，根据 `lang`、`variant` 等属性定位系统字体文件（英文 sans-serif、CJK 等）。
 - 对普通应用，直接用 `Typeface.Builder` / `Typeface.createFromFile` 加载 `/system/fonts/` 下的真实字体文件。
+- 英文（非 CJK）文本按样式区分：常规使用 `Latin.ttf`，斜体使用 `LatinItalic.ttf`；中日韩文本统一使用 `CJK.ttf`。
 - 对 Magisk DenyList 中的应用：其 mount namespace 被隔离，Magisk 字体 overlay 会被卸载，`/system/fonts` 回退为原厂字体。模块通过 `android.system.Os.stat()` 比较选中的 CJK 字体文件与 `/system/fonts/` 目录的 `st_dev`；若发现字体未被替换，则自动改用 APK 内置字体。
 - 如果 DenyList 隔离导致 `createPackageContext()` 无法创建模块上下文，会直接从 APK 的 `assets/` 中解压内置字体继续工作。
 - 自动跳过以 `:Security` 结尾的银行自检进程，避免触发 Xposed 检测导致崩溃。
@@ -25,12 +26,21 @@ Flutter 不经过 Android 的 `TextView`/`Paint`，而是直接通过 Skia/Impel
 
 ## 内置字体
 
-`app/src/main/assets/` 下包含两个回退字体，仅在 DenyList 隔离或系统字体未被替换时使用：
+`app/src/main/assets/` 下包含三个替换字体，按文字类型与样式分工：
 
-- `Roboto-Regular.ttf`
-- `OSans-RC-Regular.ttf`
+| 文件 | 用途 |
+| --- | --- |
+| `CJK.ttf` | 中日韩文字（汉字、假名、谚文、全角标点） |
+| `Latin.ttf` | 非中日韩的常规（非斜体）文字 |
+| `LatinItalic.ttf` | 非中日韩的斜体文字 |
 
-> 这两个文件是 DenyList 兼容所必需的。删除后，处于 DenyList 中的应用（例如 `cmb.pb`）将无法加载替换字体，回退到原厂字体。
+判定规则：文本中包含 CJK 字符时一律使用 `CJK.ttf`（斜体 CJK 由系统合成倾斜）；否则根据 `Typeface` 的 `ITALIC` 样式位，或字体资源名中的 `italic` / `oblique` 关键字选择 `LatinItalic.ttf`，其余使用 `Latin.ttf`。
+
+- 系统字体未被替换时（例如处于 Magisk DenyList），Latin/CJK 会回退到上面这些内置字体。
+- 斜体始终来自内置的 `LatinItalic.ttf`：`/etc/fonts.xml` 只提供常规体，没有斜体变量。
+- WebView 注入的 `@font-face` 同时注册 normal 与 italic 字面，页面中 `font-style: italic` 的元素会命中 `LatinItalic.ttf`。
+
+> 这三个文件是 DenyList 兼容所必需的。删除后，处于 DenyList 中的应用（例如 `cmb.pb`）将无法加载替换字体，回退到原厂字体。
 
 ## 构建
 
@@ -42,13 +52,33 @@ Flutter 不经过 Android 的 `TextView`/`Paint`，而是直接通过 Skia/Impel
 - Android SDK（`compileSdk 34`）
 - Android NDK（CMake 项目需要 NDK 来编译 `libfontredirect.so`）
 
-命令行构建：
+`local.properties`（已被 `.gitignore` 排除，需要本机自行创建）必须指向本机的 Android SDK，否则 Gradle 会报
+`SDK location not found. Define a valid SDK location with an ANDROID_HOME environment variable or by setting the sdk.dir path ...`：
+
+```properties
+sdk.dir=C\:\\Android-SDK
+```
+
+命令行构建（`gradle.properties` 已通过 `org.gradle.java.home` 固定 JDK 17，且 `local.properties` 已提供 SDK 路径，因此无需再设置 `JAVA_HOME` / `ANDROID_HOME`）：
 
 ```bash
-set JAVA_HOME=C:\Android-Studio\jbr
-set ANDROID_HOME=C:\Android-SDK
 .\gradlew.bat assembleRelease --no-daemon
 ```
+
+### VS Code（Java 扩展）
+
+VS Code 的 Java 扩展通过 `java.import.gradle.java.home` 挑选 Gradle daemon 使用的 JVM；未设置时会回退到 VS Code 进程启动时继承的 `JAVA_HOME`。该值在客户端生效，**会覆盖** `gradle.properties` 中的 `org.gradle.java.home`，因此若 VS Code 启动时 `JAVA_HOME` 指向 JDK 8，导入项目就会报
+`No matching variant of com.android.tools.build:gradle:7.4.2 was found ... compatible with Java 8`（AGP 7.4.2 要求 Java 11+）。
+
+仓库内的 `.vscode/settings.json` 已把它固定到 `C:\JDK-17.0.12`：
+
+```json
+{
+    "java.import.gradle.java.home": "C:\\JDK-17.0.12"
+}
+```
+
+若本机 JDK 安装路径不同，请修改这一行。修改后执行 `Developer: Reload Window` 即可重新导入。
 
 Release APK 会使用项目根目录的 `fontredirect.jks` 自动签名，输出路径为：
 

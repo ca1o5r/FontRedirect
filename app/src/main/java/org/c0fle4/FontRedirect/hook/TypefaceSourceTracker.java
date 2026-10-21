@@ -42,14 +42,7 @@ public class TypefaceSourceTracker {
             "core sans"
     };
 
-    // Package-specific override: for these packages, any .ttf/.otf file loaded
-    // from the app's own private directories (cache, files, code-cache) is treated
-    // as a CJK font. Ele.me downloads/extracts its custom fonts to those dirs and
-    // Weex reuses them on warm starts, bypassing asset-based source tracking.
-    private static volatile String targetPackage = null;
-
     public static void hook(String pkg, ClassLoader cl) {
-        targetPackage = pkg;
         hookCreateFromAsset(pkg, cl);
         hookCreateFromFile(pkg, cl);
         hookCreateFromFile2(pkg, cl);
@@ -290,6 +283,16 @@ public class TypefaceSourceTracker {
         return null;
     }
 
+    /**
+     * True when a font source hint (asset path, file name, resource or family name)
+     * denotes an italic face.
+     */
+    public static boolean isItalicSource(String source) {
+        if (source == null) return false;
+        String s = source.toLowerCase();
+        return s.contains("italic") || s.contains("oblique");
+    }
+
     private static Typeface replacementFor(Typeface original, String source) {
         if (original == null || source == null || replacing.get()) return null;
         String s = source.toLowerCase();
@@ -309,24 +312,20 @@ public class TypefaceSourceTracker {
                 }
             }
         }
-        // Ele.me and similar apps extract their bundled/custom fonts into cache/
-        // files/ directories, then reload them on warm starts. Those file paths
-        // do not contain CJK hints, so force them to CJK based on package and
-        // private-directory location.
-        if (!cjk && !english && s.startsWith("file:/data/data/")) {
-            String pkg = targetPackage;
-            if (pkg != null && s.contains("/data/data/" + pkg + "/")) {
-                String filePart = s.substring(s.lastIndexOf('/') + 1);
-                if (filePart.endsWith(".ttf") || filePart.endsWith(".otf") || filePart.endsWith(".ttc")) {
-                    FileLogger.i(TAG, "Treating app-private font as CJK: " + source);
-                    cjk = true;
-                }
-            }
-        }
         if (!cjk && !english) return null;
-        Typeface base = cjk ? FontLoader.getCjkTypeface() : FontLoader.getEnglishTypeface();
-        if (base == null || base == original) return null;
         int style = original.getStyle();
+        Typeface base;
+        if (cjk) {
+            base = FontLoader.getCjkTypeface();
+        } else if ((style & Typeface.ITALIC) != 0 || isItalicSource(s)) {
+            // The italic face already carries the slant, so drop the ITALIC bit to
+            // avoid faux-italic double slanting.
+            base = FontLoader.getLatinItalicTypeface();
+            style &= ~Typeface.ITALIC;
+        } else {
+            base = FontLoader.getEnglishTypeface();
+        }
+        if (base == null || base == original) return null;
         if (style == 0 || base.getStyle() == style) return base;
         // Guard against recursive hooks from Typeface.create.
         replacing.set(true);
@@ -420,22 +419,6 @@ public class TypefaceSourceTracker {
     public static String classify(Typeface tf) {
         if (isKnownCjk(tf)) return "cjk";
         if (isKnownEnglish(tf)) return "english";
-        return "unknown";
-    }
-
-    /**
-     * Classify a raw source/family descriptor string as cjk, english, or unknown.
-     * Used by Weex hooks where only the font family name is available.
-     */
-    public static String classifySource(String source) {
-        if (source == null) return "unknown";
-        String s = source.toLowerCase();
-        for (String hint : CJK_HINTS) {
-            if (s.contains(hint)) return "cjk";
-        }
-        for (String hint : ENG_HINTS) {
-            if (s.contains(hint)) return "english";
-        }
         return "unknown";
     }
 }
