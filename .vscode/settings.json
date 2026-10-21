@@ -1,0 +1,12 @@
+{
+    // The Java extension (JDT LS / Buildship) chooses the Gradle daemon JVM from
+    // this setting and falls back to the JAVA_HOME that VS Code inherited at
+    // launch. That choice is applied client-side and overrides
+    // org.gradle.java.home in gradle.properties, so a VS Code session started
+    // while JAVA_HOME pointed at JDK 8 fails with:
+    //   No matching variant of com.android.tools.build:gradle:7.4.2 was found
+    //   ... the consumer needed a runtime of a component compatible with Java 8
+    // AGP 7.4.2 requires Java 11+, so pin the Gradle JVM here.
+    "java.import.gradle.java.home": "C:\\JDK-17.0.12"
+}
+
