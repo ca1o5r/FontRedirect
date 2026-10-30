@@ -1,6 +1,6 @@
 # FontRedirect
 
-LSPosed 模块，强制目标应用使用模块内置的三个字体文件渲染文字。当前版本：3.8.9。
+LSPosed 模块，强制目标应用使用模块内置的三个字体文件渲染文字。当前版本：3.8.10。
 
 ## 工作原理
 
@@ -135,4 +135,6 @@ app/build/outputs/apk/release/app-release.apk
 - 模块是否生效完全由 LSPosed 作用域决定；App 内的应用列表/复选框界面已不实际控制 Hook。
 - 应用在 Magisk DenyList 中也能生效，不需要手动移除。
 - 银行类应用（如 `cmb.pb`）的 `:Security` 进程会被自动跳过，主进程仍会正常 Hook。
+- **Google 密码管理工具（Google Password）**：桌面/抽屉中的“Google 密码”图标对应快捷方式应用 `com.google.android.apps.credentialmanager`，该 APK 仅为一个跳板，其实际密码管理界面与列表全部由 **Google Play 服务（`com.google.android.gms`）** 渲染。若要让 Google 密码生效，必须在 LSPosed 作用域中勾选 **【Google Play 服务】（`com.google.android.gms`）**；若仅勾选了前者，模块会在打开时 Toast 提示。
+- **WebView 混合应用与自定义 Scheme 跳转**：模块完整代理了 `WebViewClient` 的所有回调并保留原生 Client 委托，同时对非 Web 协议（如 `cmbmobilebank://`、`alipays://`、`weixin://`、`intent://` 等）提供自动意图分发兜底，避免出现 `net::ERR_UNKNOWN_URL_SCHEME` 导致页面无法打开。
 - Flutter 支持通过原生 GOT patch 实现，理论上适用于所有使用标准 NDK `AAsset*` API 加载资源的 Flutter 版本；Skia/Impeller 内部字体缓存可能导致首次启动时旧字体仍短暂出现。

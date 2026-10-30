@@ -54,6 +54,10 @@ public class HookEntry implements IXposedHookLoadPackage {
                 Application app = (Application) param.thisObject;
                 FileLogger.init(app);
                 FileLogger.i(TAG, "Application.onCreate hooked for " + pkg);
+
+                if ("com.google.android.apps.credentialmanager".equals(pkg)) {
+                    FileLogger.i(TAG, "com.google.android.apps.credentialmanager is a launcher shortcut; UI is rendered by com.google.android.gms");
+                }
                 try {
                     Context moduleCtx = app.createPackageContext("org.c0fle4.FontRedirect", Context.CONTEXT_IGNORE_SECURITY);
                     FileLogger.i(TAG, "module context created for " + pkg);
@@ -367,6 +371,10 @@ public class HookEntry implements IXposedHookLoadPackage {
                     }
                     FileLogger.i(TAG, "Hooked " + className + "." + method + " (" + hooked + " overloads) for " + pkg);
                 } catch (Throwable t) {
+                    if ("android.view.DisplayListCanvas".equals(className)) {
+                        // DisplayListCanvas was removed in Android 10+ (replaced by RecordingCanvas)
+                        continue;
+                    }
                     FileLogger.e(TAG, "Failed to hook " + className + "." + method + " for " + pkg, t);
                 }
             }

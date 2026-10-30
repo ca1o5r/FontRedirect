@@ -1,7 +1,21 @@
 package org.c0fle4.FontRedirect.hook;
 
+import android.app.Activity;
+import android.content.Context;
+import android.content.Intent;
+import android.graphics.Bitmap;
 import android.net.Uri;
+import android.net.http.SslError;
+import android.os.Build;
+import android.os.Message;
+import android.view.KeyEvent;
+import android.webkit.ClientCertRequest;
+import android.webkit.HttpAuthHandler;
+import android.webkit.RenderProcessGoneDetail;
+import android.webkit.SafeBrowsingResponse;
+import android.webkit.SslErrorHandler;
 import android.webkit.ValueCallback;
+import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebView;
@@ -13,7 +27,9 @@ import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.InputStream;
+import java.util.Collections;
 import java.util.Map;
+import java.util.WeakHashMap;
 
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedHelpers;
@@ -27,6 +43,9 @@ public class WebViewInjector {
     private static final String FONT_PATH_LATIN_ITALIC = "/latin-italic";
     private static final String FONT_PATH_CJK = "/cjk";
 
+    private static final Map<WebView, InjectorWebViewClient> clientMap =
+            Collections.synchronizedMap(new WeakHashMap<>());
+
     public static void hook(String pkg, ClassLoader cl) {
         // Twitch uses bot-protection WebViews (passport.twitch.tv); wrapping the
         // WebViewClient and injecting CSS breaks the Live tab content loader.
@@ -35,6 +54,7 @@ public class WebViewInjector {
             return;
         }
         hookSetWebViewClient(pkg, cl);
+        hookGetWebViewClient(pkg, cl);
         hookLoadUrl(pkg, cl);
     }
 
@@ -45,17 +65,42 @@ public class WebViewInjector {
                     new XC_MethodHook() {
                         @Override
                         protected void beforeHookedMethod(MethodHookParam param) {
+                            WebView webView = (WebView) param.thisObject;
                             Object original = param.args[0];
                             if (original instanceof InjectorWebViewClient) {
+                                clientMap.put(webView, (InjectorWebViewClient) original);
                                 return;
                             }
-                            param.args[0] = new InjectorWebViewClient((WebViewClient) original);
-                            FileLogger.i(TAG, "WebView.setWebViewClient wrapped for " + pkg);
+                            InjectorWebViewClient wrapper = new InjectorWebViewClient((WebViewClient) original);
+                            clientMap.put(webView, wrapper);
+                            param.args[0] = wrapper;
+                            FileLogger.i(TAG, "WebView.setWebViewClient wrapped for " + pkg + " (delegate=" + original + ")");
                         }
                     });
             FileLogger.i(TAG, "WebView.setWebViewClient hooked for " + pkg);
         } catch (Throwable t) {
             FileLogger.e(TAG, "Failed to hook WebView.setWebViewClient for " + pkg, t);
+        }
+    }
+
+    private static void hookGetWebViewClient(String pkg, ClassLoader cl) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            return;
+        }
+        try {
+            XposedHelpers.findAndHookMethod("android.webkit.WebView", cl, "getWebViewClient",
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            Object result = param.getResult();
+                            if (result instanceof InjectorWebViewClient) {
+                                param.setResult(((InjectorWebViewClient) result).getDelegate());
+                            }
+                        }
+                    });
+            FileLogger.i(TAG, "WebView.getWebViewClient hooked for " + pkg);
+        } catch (Throwable t) {
+            FileLogger.e(TAG, "Failed to hook WebView.getWebViewClient for " + pkg, t);
         }
     }
 
@@ -96,27 +141,26 @@ public class WebViewInjector {
 
     private static void ensureInjectingClient(WebView webView, String pkg) {
         try {
-            WebViewClient current = getCurrentWebViewClient(webView);
-            if (current == null) {
-                webView.setWebViewClient(new InjectorWebViewClient(null));
-                FileLogger.i(TAG, "Default InjectorWebViewClient set for " + pkg);
+            if (clientMap.containsKey(webView)) {
+                return;
             }
+            WebViewClient current = null;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                try {
+                    current = webView.getWebViewClient();
+                } catch (Throwable ignored) {
+                }
+            }
+            if (current instanceof InjectorWebViewClient) {
+                clientMap.put(webView, (InjectorWebViewClient) current);
+                return;
+            }
+            InjectorWebViewClient wrapper = new InjectorWebViewClient(current);
+            clientMap.put(webView, wrapper);
+            webView.setWebViewClient(wrapper);
+            FileLogger.i(TAG, "ensureInjectingClient set for " + pkg + " (delegate=" + current + ")");
         } catch (Throwable t) {
             FileLogger.e(TAG, "ensureInjectingClient failed for " + pkg, t);
-        }
-    }
-
-    private static WebViewClient getCurrentWebViewClient(WebView webView) {
-        try {
-            java.lang.reflect.Field f = WebView.class.getDeclaredField("mWebViewClient");
-            f.setAccessible(true);
-            return (WebViewClient) f.get(webView);
-        } catch (NoSuchFieldException e) {
-            // Some ROMs use different field names; fall back to forcing a default client.
-            return null;
-        } catch (Throwable t) {
-            FileLogger.e(TAG, "getCurrentWebViewClient failed", t);
-            return null;
         }
     }
 
@@ -127,8 +171,12 @@ public class WebViewInjector {
             this.delegate = delegate;
         }
 
+        public WebViewClient getDelegate() {
+            return delegate;
+        }
+
         @Override
-        public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
+        public void onPageStarted(WebView view, String url, Bitmap favicon) {
             injectCss(view);
             if (delegate != null) {
                 delegate.onPageStarted(view, url, favicon);
@@ -147,22 +195,90 @@ public class WebViewInjector {
         }
 
         @Override
+        public void onLoadResource(WebView view, String url) {
+            if (delegate != null) {
+                delegate.onLoadResource(view, url);
+            } else {
+                super.onLoadResource(view, url);
+            }
+        }
+
+        @Override
+        public void onPageCommitVisible(WebView view, String url) {
+            if (delegate != null) {
+                delegate.onPageCommitVisible(view, url);
+            } else {
+                super.onPageCommitVisible(view, url);
+            }
+        }
+
+        @Override
         public boolean shouldOverrideUrlLoading(WebView view, String url) {
-            return delegate != null ? delegate.shouldOverrideUrlLoading(view, url)
-                    : super.shouldOverrideUrlLoading(view, url);
+            if (delegate != null) {
+                try {
+                    if (delegate.shouldOverrideUrlLoading(view, url)) {
+                        return true;
+                    }
+                } catch (Throwable t) {
+                    FileLogger.e(TAG, "delegate.shouldOverrideUrlLoading(url) failed", t);
+                }
+            }
+            if (handleNonWebScheme(view, url)) {
+                return true;
+            }
+            return super.shouldOverrideUrlLoading(view, url);
         }
 
         @Override
         public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-            return delegate != null ? delegate.shouldOverrideUrlLoading(view, request)
-                    : super.shouldOverrideUrlLoading(view, request);
+            if (delegate != null) {
+                try {
+                    if (delegate.shouldOverrideUrlLoading(view, request)) {
+                        return true;
+                    }
+                } catch (Throwable t) {
+                    FileLogger.e(TAG, "delegate.shouldOverrideUrlLoading(request) failed", t);
+                }
+            }
+            if (request != null && request.getUrl() != null) {
+                if (handleNonWebScheme(view, request.getUrl().toString())) {
+                    return true;
+                }
+            }
+            return super.shouldOverrideUrlLoading(view, request);
+        }
+
+        private boolean handleNonWebScheme(WebView view, String url) {
+            if (url == null) return false;
+            String lower = url.toLowerCase();
+            if (lower.startsWith("http://") || lower.startsWith("https://")
+                    || lower.startsWith("file://") || lower.startsWith("about:")
+                    || lower.startsWith("javascript:") || lower.startsWith("data:")) {
+                return false;
+            }
+            try {
+                Intent intent = Intent.parseUri(url, Intent.URI_INTENT_SCHEME);
+                if (intent != null) {
+                    intent.addCategory(Intent.CATEGORY_BROWSABLE);
+                    intent.setComponent(null);
+                    Context ctx = view.getContext();
+                    if (ctx instanceof Activity) {
+                        ctx.startActivity(intent);
+                    } else {
+                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        ctx.startActivity(intent);
+                    }
+                    FileLogger.i(TAG, "handleNonWebScheme launched intent for: " + url);
+                    return true;
+                }
+            } catch (Throwable t) {
+                FileLogger.w(TAG, "handleNonWebScheme failed for: " + url, t);
+            }
+            return false;
         }
 
         @Override
         public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
-            if (request != null && request.getUrl() != null) {
-                FileLogger.i(TAG, "shouldInterceptRequest request=" + request.getUrl() + " method=" + request.getMethod());
-            }
             WebResourceResponse response = interceptFontRequest(request);
             if (response != null) return response;
             return delegate != null ? delegate.shouldInterceptRequest(view, request)
@@ -171,7 +287,6 @@ public class WebViewInjector {
 
         @Override
         public WebResourceResponse shouldInterceptRequest(WebView view, String url) {
-            FileLogger.i(TAG, "shouldInterceptRequest url=" + url);
             WebResourceResponse response = interceptFontRequest(url);
             if (response != null) return response;
             return delegate != null ? delegate.shouldInterceptRequest(view, url)
@@ -188,7 +303,7 @@ public class WebViewInjector {
         }
 
         @Override
-        public void onReceivedError(WebView view, WebResourceRequest request, android.webkit.WebResourceError error) {
+        public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
             if (delegate != null) {
                 delegate.onReceivedError(view, request, error);
             } else {
@@ -197,11 +312,108 @@ public class WebViewInjector {
         }
 
         @Override
-        public void onReceivedSslError(WebView view, android.webkit.SslErrorHandler handler, android.net.http.SslError error) {
+        public void onReceivedHttpError(WebView view, WebResourceRequest request, WebResourceResponse errorResponse) {
+            if (delegate != null) {
+                delegate.onReceivedHttpError(view, request, errorResponse);
+            } else {
+                super.onReceivedHttpError(view, request, errorResponse);
+            }
+        }
+
+        @Override
+        public void onReceivedSslError(WebView view, SslErrorHandler handler, SslError error) {
             if (delegate != null) {
                 delegate.onReceivedSslError(view, handler, error);
             } else {
                 super.onReceivedSslError(view, handler, error);
+            }
+        }
+
+        @Override
+        public void onReceivedHttpAuthRequest(WebView view, HttpAuthHandler handler, String host, String realm) {
+            if (delegate != null) {
+                delegate.onReceivedHttpAuthRequest(view, handler, host, realm);
+            } else {
+                super.onReceivedHttpAuthRequest(view, handler, host, realm);
+            }
+        }
+
+        @Override
+        public void onReceivedClientCertRequest(WebView view, ClientCertRequest request) {
+            if (delegate != null) {
+                delegate.onReceivedClientCertRequest(view, request);
+            } else {
+                super.onReceivedClientCertRequest(view, request);
+            }
+        }
+
+        @Override
+        public void onReceivedLoginRequest(WebView view, String realm, String account, String args) {
+            if (delegate != null) {
+                delegate.onReceivedLoginRequest(view, realm, account, args);
+            } else {
+                super.onReceivedLoginRequest(view, realm, account, args);
+            }
+        }
+
+        @Override
+        public void onFormResubmission(WebView view, Message dontResend, Message resend) {
+            if (delegate != null) {
+                delegate.onFormResubmission(view, dontResend, resend);
+            } else {
+                super.onFormResubmission(view, dontResend, resend);
+            }
+        }
+
+        @Override
+        public void doUpdateVisitedHistory(WebView view, String url, boolean isReload) {
+            if (delegate != null) {
+                delegate.doUpdateVisitedHistory(view, url, isReload);
+            } else {
+                super.doUpdateVisitedHistory(view, url, isReload);
+            }
+        }
+
+        @Override
+        public void onScaleChanged(WebView view, float oldScale, float newScale) {
+            if (delegate != null) {
+                delegate.onScaleChanged(view, oldScale, newScale);
+            } else {
+                super.onScaleChanged(view, oldScale, newScale);
+            }
+        }
+
+        @Override
+        public void onUnhandledKeyEvent(WebView view, KeyEvent event) {
+            if (delegate != null) {
+                delegate.onUnhandledKeyEvent(view, event);
+            } else {
+                super.onUnhandledKeyEvent(view, event);
+            }
+        }
+
+        @Override
+        public boolean shouldOverrideKeyEvent(WebView view, KeyEvent event) {
+            if (delegate != null) {
+                return delegate.shouldOverrideKeyEvent(view, event);
+            }
+            return super.shouldOverrideKeyEvent(view, event);
+        }
+
+        @Override
+        public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
+            if (delegate != null) {
+                return delegate.onRenderProcessGone(view, detail);
+            }
+            return super.onRenderProcessGone(view, detail);
+        }
+
+        @Override
+        public void onSafeBrowsingHit(WebView view, WebResourceRequest request, int threatType, SafeBrowsingResponse callback) {
+            if (delegate != null) {
+                delegate.onSafeBrowsingHit(view, request, threatType, callback);
+            } else {
+                super.onSafeBrowsingHit(view, request, threatType, callback);
             }
         }
     }
