@@ -112,6 +112,12 @@ static int looks_like_cjk(const char *filename) {
 
 static const char *choose_replacement(const char *filename) {
     if (looks_like_cjk(filename)) return s_cjk_path;
+    // Google Sans / Product Sans are the body-text faces. They are used for
+    // both Latin and CJK text, but they carry no CJK glyphs, so Flutter falls
+    // back to the system font for CJK — which the in-process hook cannot
+    // redirect. Point them at the CJK face instead: FRCJK includes Latin
+    // glyphs as well, so both Latin and CJK stay in the primary font.
+    if (strcasestr(base_name(filename), "sans") != NULL) return s_cjk_path;
     return s_latin_path;
 }
 

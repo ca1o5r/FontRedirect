@@ -19,10 +19,16 @@ Flutter 不经过 Android 的 `TextView`/`Paint`，而是直接通过 Skia/Impel
 1. 枚举已加载模块，定位 `libflutter.so` 的 ELF 镜像。
 2. 解析其动态重定位表，找到 `AAssetManager_open`、`AAsset_getBuffer`、`AAsset_getLength`、`AAsset_getLength64`、`AAsset_read`、`AAsset_close` 的 GOT 表项。
 3. 使用 `mprotect` 绕过 RELRO 只读保护，将实际被 `libflutter.so` 导入的 GOT 表项替换为模块实现的拦截函数（不同 Flutter 版本可能只导入其中一部分，缺失的表项会被跳过）。
-4. 当 `libflutter.so` 尝试打开 `.ttf`/`.otf`/`.ttc`/`.otc` 等任意字体资源时，返回指向替换字体文件的伪 `AAsset` 句柄；所有被加载的 Flutter 内置字体都会按文件名中的 CJK 关键字区分并替换。
+4. 当 `libflutter.so` 尝试打开 `.ttf`/`.otf`/`.ttc`/`.otc` 等任意字体资源时，返回指向替换字体文件的伪 `AAsset` 句柄：文件名含 CJK 关键字（`cjk`/`sc`/`tc`/`jp`/`kr`/`hans`/`hant` 等）的字体替换为 `CJK.ttf`；文件名含 `sans` 的正文/标题字体（Google Sans、Product Sans 等）也替换为 `CJK.ttf`，其余字体替换为 `Latin.ttf`。
 5. 若 `Application.onCreate` 触发时 `libflutter.so` 尚未加载，后台轮询最多 5 秒，在加载完成后补刀。
 
 > 注意：Flutter 直装应用的字体完全替换依赖 APK 中字体资源的文件名可被识别为字体文件。如果应用通过动态下载或自定义扩展名加载字体，拦截可能不会生效。
+
+### Flutter 中文的替换方式
+
+Flutter 内置字体（如 Google Sans）通常不含 CJK 字形，中文原本会回退到系统字体 `/system/fonts/NotoSansCJK-Regular.ttc`；而系统字体由 zygote 在开机时预加载并通过 mmap 继承给应用进程，应用进程内不会再 `open` 这些文件，因此**进程内 GOT 拦截无法截获系统字体回退**。
+
+解决办法是把正文/标题字体（`sans` 系列）直接替换成 `CJK.ttf`：`CJK.ttf`（`FRCJK`）同时携带拉丁与 CJK 字形，这样中文不再触发系统回退，直接命中 `CJK.ttf` 的字形。副作用是这些 Flutter 视图里的拉丁文字也会使用 `CJK.ttf` 的拉丁字形，而非 `Latin.ttf`（Flutter 的字体加载按文件名区分，无法按文字内容区分 CJK 与拉丁）。
 
 ## 内置字体
 
